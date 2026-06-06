@@ -881,7 +881,25 @@ export default function WPPage() {
           <p className="text-xs text-slate-500 px-4 py-4">
             Select at least 1 product and 1 channel above to view and edit weekly values.
           </p>
-        ) : (
+        ) : (() => {
+          // Pre-compute one bg color per week so every row in the same week looks identical
+          const weekBgMap = new Map<number, string>();
+          for (const r of displayRows) {
+            if (weekBgMap.has(r.current_week)) continue;
+            if (r.is_ongoing) { weekBgMap.set(r.current_week, "bg-orange-900/10"); continue; }
+            if (r.actualised) {
+              // Check worst variance across all rows in this week
+              const weekRows = displayRows.filter((x) => x.current_week === r.current_week);
+              const maxVar = Math.max(...weekRows.map((x) => x.variance_units_perc ?? 0));
+              const minVar = Math.min(...weekRows.map((x) => x.variance_units_perc ?? 0));
+              if (maxVar > 0.15)       { weekBgMap.set(r.current_week, "bg-red-900/20");      continue; }
+              if (minVar < -0.1)       { weekBgMap.set(r.current_week, "bg-emerald-900/15");  continue; }
+            }
+            // Alternating stripe for all other weeks
+            weekBgMap.set(r.current_week, r.current_week % 2 === 0 ? "bg-slate-700/15" : "");
+          }
+
+          return (
           <table className="w-full text-xs text-slate-300">
             <thead>
               <tr className="border-b border-slate-700 text-slate-400 bg-slate-800/80">
@@ -929,9 +947,9 @@ export default function WPPage() {
             <tbody>
               {displayRows.map((r) => {
                 const skuInfo = filters.hierarchies.find((h) => h.hierarchy_code === r.hierarchy_code);
-                const exBg = rowExceptionBg(r);
+                const weekBg = weekBgMap.get(r.current_week) ?? "";
                 const locked = isLocked(r);
-                const baseClass = `transition-colors ${exBg} hover:brightness-110 border-b border-slate-700/50`;
+                const baseClass = `transition-colors ${weekBg} hover:brightness-110 border-b border-slate-700/50`;
                 const wk = (
                   <td className={`px-3 py-1.5 font-mono ${r._modified ? "text-amber-400" : "text-slate-400"}`}>
                     {r.current_week}{r._modified && <span className="ml-1 text-[9px]">✎</span>}
@@ -1033,7 +1051,8 @@ export default function WPPage() {
               })}
             </tbody>
           </table>
-        )}
+          );
+        })()}
 
         {/* Legend */}
         {canEdit && rows.length > 0 && (
