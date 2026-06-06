@@ -26,8 +26,8 @@ WAREHOUSE_SUB_CHANNELS = {
     "Store": "Store_warehouse",
 }
 
-# Fiscal weeks 202501..202552
-FISCAL_WEEKS = [int(f"2025{str(w).zfill(2)}") for w in range(1, 53)]
+# Fiscal weeks 202601..202652
+FISCAL_WEEKS = [int(f"2026{str(w).zfill(2)}") for w in range(1, 53)]
 
 # Base metrics per hierarchy (AIR = avg initial retail price, AUC = avg unit cost)
 HIERARCHY_METRICS = {
@@ -44,7 +44,7 @@ HIERARCHY_METRICS = {
 CHANNEL_SPLIT = {"Ecom": 0.55, "Indirect": 0.30, "Store": 0.15}
 
 # The fiscal week that is currently in-flight (not yet actualised, but not open for editing)
-CURRENT_WEEK = 202520
+CURRENT_WEEK = 202620
 
 
 def _seasonal_curve(week_num: int, peak_week: int) -> float:
@@ -164,8 +164,8 @@ def generate_ty_ly_data() -> List[Dict]:
                     "l2_name": h["l2_name"],
                     "channel": ch,
                     "current_week": wk,
-                    "compared_week":     int(str(wk).replace("2025", "2024")),
-                    "compared_week_lly": int(str(wk).replace("2025", "2023")),
+                    "compared_week":     int(str(wk).replace("2026", "2025")),
+                    "compared_week_lly": int(str(wk).replace("2026", "2024")),
                     "ty_units": ty_units,
                     "ly_units": ly_units,
                     "lly_units": lly_units,
