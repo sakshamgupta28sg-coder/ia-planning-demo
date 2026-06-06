@@ -321,11 +321,19 @@ export default function WPPage() {
     : portfolio;
 
   // ── Exception / coloring helpers ─────────────────────────────────────────────
+  // variance = Plan − Actual: positive = below plan = BAD (red), negative = above plan = GOOD (green)
   function varPctColor(v: number | null) {
     if (v === null) return "text-slate-500";
-    if (v < -0.15) return "text-red-400";
-    if (v < -0.05) return "text-amber-400";
-    if (v > 0.05)  return "text-emerald-400";
+    if (v > 0.15)  return "text-red-400";     // actual badly below plan
+    if (v > 0.05)  return "text-amber-400";   // actual slightly below plan
+    if (v < -0.05) return "text-emerald-400"; // actual above plan
+    return "text-slate-300";
+  }
+  // TY/LY variance = TY − LY: positive = TY grew vs LY = GOOD (green)
+  function lyVarColor(v: number | null) {
+    if (v === null) return "text-slate-500";
+    if (v > 0.05)  return "text-emerald-400"; // TY above LY
+    if (v < -0.05) return "text-red-400";     // TY below LY
     return "text-slate-300";
   }
   function wosColor(w: number) {
@@ -342,8 +350,8 @@ export default function WPPage() {
   }
   function rowExceptionBg(r: WPRow) {
     if (r.actualised && r.variance_units_perc !== null) {
-      if (r.variance_units_perc < -0.15) return "bg-red-900/20";
-      if (r.variance_units_perc > 0.1)   return "bg-emerald-900/15";
+      if (r.variance_units_perc > 0.15)  return "bg-red-900/20";    // actual badly below plan
+      if (r.variance_units_perc < -0.1)  return "bg-emerald-900/15"; // actual above plan
     }
     if (r.wos > 14) return "bg-amber-900/15";
     if (r.wos > 0 && r.wos < 2) return "bg-red-900/15";
@@ -705,7 +713,11 @@ export default function WPPage() {
                         <td className={`px-3 py-1.5 text-right ${varPctColor(r.variance_units_perc)}`}>{r.variance_units !== null ? fmtU(r.variance_units) : "—"}</td>
                         <td className={`px-3 py-1.5 text-right ${varPctColor(r.variance_units_perc)}`}>{r.variance_units_perc !== null ? pct(r.variance_units_perc) : "—"}</td>
                         <td className={`px-3 py-1.5 text-right ${varPctColor(r.variance_units_perc)}`}>{r.variance_dollars !== null ? fmtD(r.variance_dollars) : "—"}</td>
-                        <td className={`px-3 py-1.5 text-right ${varPctColor(r.variance_units_perc)}`}>—</td>
+                        <td className={`px-3 py-1.5 text-right ${varPctColor(r.variance_units_perc)}`}>
+                          {r.variance_dollars !== null && r.written_sales_dollars > 0
+                            ? pct(r.variance_dollars / r.written_sales_dollars)
+                            : "—"}
+                        </td>
                         <td className={`px-3 py-1.5 text-right ${stColor(r.sell_through_perc)}`}>{pct(r.sell_through_perc)}</td>
                       </> : <>
                         {[...Array(7)].map((_, i) => <td key={i} className="px-3 py-1.5 text-right text-slate-600">—</td>)}
@@ -734,12 +746,12 @@ export default function WPPage() {
                     {activeTab === "ly" && <>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.written_sales_units)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{fmtU(r.ly_sales_units)}</td>
-                      <td className={`px-3 py-1.5 text-right ${varPctColor(r.ly_units_var_perc)}`}>{fmtU(r.ly_units_var)}</td>
-                      <td className={`px-3 py-1.5 text-right font-medium ${varPctColor(r.ly_units_var_perc)}`}>{pct(r.ly_units_var_perc)}</td>
+                      <td className={`px-3 py-1.5 text-right ${lyVarColor(r.ly_units_var_perc)}`}>{fmtU(r.ly_units_var)}</td>
+                      <td className={`px-3 py-1.5 text-right font-medium ${lyVarColor(r.ly_units_var_perc)}`}>{pct(r.ly_units_var_perc)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtD(r.written_sales_dollars)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{fmtD(r.ly_sales_dollars)}</td>
-                      <td className={`px-3 py-1.5 text-right ${varPctColor(r.ly_dollars_var_perc)}`}>{fmtD(r.ly_dollars_var)}</td>
-                      <td className={`px-3 py-1.5 text-right font-medium ${varPctColor(r.ly_dollars_var_perc)}`}>{pct(r.ly_dollars_var_perc)}</td>
+                      <td className={`px-3 py-1.5 text-right ${lyVarColor(r.ly_dollars_var_perc)}`}>{fmtD(r.ly_dollars_var)}</td>
+                      <td className={`px-3 py-1.5 text-right font-medium ${lyVarColor(r.ly_dollars_var_perc)}`}>{pct(r.ly_dollars_var_perc)}</td>
                     </>}
                   </tr>
                 );

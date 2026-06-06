@@ -240,6 +240,7 @@ from datetime import datetime
 
 OVERRIDES: Dict[str, Dict] = {}   # key: f"{hc}_{wk}_{ch}" → {field: value}
 SNAPSHOTS: List[Dict] = []
+_NEXT_SNAPSHOT_ID: int = 0        # monotonic counter — never reuses IDs after deletes (P-04)
 
 
 def _ovr_key(hc: int, wk: int, ch: str) -> str:
@@ -276,8 +277,8 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     if "on_order_placed_total_unit" in ovr:
         row["total_receipt_units"] = row["on_order_placed_total_unit"] + row["on_order_unplaced_total_unit"]
 
-    # EOP = BOP - Sales Units + OO Placed
-    row["eop_units"] = max(0, row["bop_units"] - units + row["on_order_placed_total_unit"])
+    # EOP = BOP - Sales Units + Total Receipts (consistent with initial data generation)
+    row["eop_units"] = max(0, row["bop_units"] - units + row["total_receipt_units"])
 
     row["written_sales_cost"] = round(units * auc, 2)
     row["written_gm_dollar"]  = round(row["written_sales_dollars"] - row["written_sales_cost"], 2)
@@ -420,6 +421,11 @@ def apply_edit(hc: int, wk: int, ch: str, field: str, value: float) -> Dict:
     key = _ovr_key(hc, wk, ch)
     if key not in OVERRIDES:
         OVERRIDES[key] = {}
+    # Round unit fields to integers, dollar fields to 2 dp (OBS-02)
+    if field in ("written_sales_units", "on_order_placed_total_unit"):
+        value = float(round(value))
+    else:
+        value = round(value, 2)
     OVERRIDES[key][field] = value
     OVERRIDES[key]["_last_edited"] = field   # track which field was most recently changed
     rows = get_agg_rows(hc, ch)
@@ -447,21 +453,23 @@ def delete_snapshot(snap_id: int) -> bool:
 
 
 def save_snapshot(name: str) -> Dict:
+    global _NEXT_SNAPSHOT_ID
     all_rows = get_agg_rows()
-    td = sum(r["written_sales_dollars"] for r in all_rows)
+    td = round(sum(r["written_sales_dollars"] for r in all_rows), 2)
+    tg = round(sum(r["written_gm_dollar"] for r in all_rows), 2)
+    _NEXT_SNAPSHOT_ID += 1
     snap = {
-        "id":             len(SNAPSHOTS) + 1,
-        "name":           name,
-        "created_at":     datetime.now().isoformat(),
+        "id":              _NEXT_SNAPSHOT_ID,   # monotonic — no collision after deletes (P-04)
+        "name":            name,
+        "created_at":      datetime.now().isoformat(),
         "overrides_count": len(OVERRIDES),
-        "overrides":      {k: dict(v) for k, v in OVERRIDES.items()},
+        "overrides":       {k: dict(v) for k, v in OVERRIDES.items()},
         "summary": {
             "total_sales_units":   sum(r["written_sales_units"] for r in all_rows),
-            "total_sales_dollars": round(td, 2),
-            "total_gm_dollar":     round(sum(r["written_gm_dollar"] for r in all_rows), 2),
-            "avg_gm_perc":         round(
-                sum(r["written_gm_perc"] for r in all_rows) / len(all_rows), 4
-            ) if all_rows else 0,
+            "total_sales_dollars": td,
+            "total_gm_dollar":     tg,
+            # Dollar-weighted GM% — not simple average (P-03)
+            "avg_gm_perc":         round(tg / td, 4) if td > 0 else 0,
         },
     }
     SNAPSHOTS.append(snap)

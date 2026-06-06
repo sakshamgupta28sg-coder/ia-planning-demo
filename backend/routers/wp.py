@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from dummy_data import (
     WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, SNAPSHOTS,
@@ -190,7 +190,7 @@ class EditRequest(BaseModel):
     current_week: int
     channel: str
     field: str
-    value: float
+    value: float = Field(ge=0, description="Value must be non-negative")
 
 
 @router.put("/row")
