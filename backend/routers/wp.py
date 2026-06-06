@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 from dummy_data import (
     WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, SNAPSHOTS,
-    get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot,
+    get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -41,30 +41,82 @@ def get_wp_by_week(
         wk = r["current_week"]
         if wk not in weeks:
             weeks[wk] = {
-                "current_week":              wk,
-                "written_sales_units":       0,
-                "written_sales_dollars":     0.0,
-                "written_gm_dollar":         0.0,
-                "written_sales_cost":        0.0,
-                "bop_units":                 0,
-                "eop_units":                 0,
-                "total_receipt_units":       0,
-                "recomm_receipt_units":      0,
-                "on_order_placed_total_unit": 0,
-                "_modified":                 False,
+                "current_week":                wk,
+                "written_sales_units":         0,
+                "written_sales_dollars":       0.0,
+                "written_gm_dollar":           0.0,
+                "written_sales_cost":          0.0,
+                "written_auc":                 r.get("written_auc", 0.0),
+                "written_aur":                 0.0,
+                "written_gm_perc":             0.0,
+                "bop_units":                   0,
+                "eop_units":                   0,
+                "total_receipt_units":         0,
+                "recomm_receipt_units":        0,
+                "on_order_placed_total_unit":  0,
+                "on_order_unplaced_total_unit":0,
+                "actual_sales_units":          0,
+                "actual_sales_dollars":        0.0,
+                "actual_sales_cost":           0.0,
+                "markdown_units":              0,
+                "markdown_dollars":            0.0,
+                "wos":                         0.0,
+                "sell_through_perc":           0.0,
+                "otb_units":                   0,
+                "otb_dollars":                 0.0,
+                "variance_units":              None,
+                "variance_dollars":            None,
+                "variance_units_perc":         None,
+                "ly_sales_units":              0,
+                "ly_sales_dollars":            0.0,
+                "ly_units_var":                0,
+                "ly_dollars_var":              0.0,
+                "ly_units_var_perc":           0.0,
+                "ly_dollars_var_perc":         0.0,
+                "actualised":                  r.get("actualised", False),
+                "_modified":                   False,
             }
         w = weeks[wk]
-        w["written_sales_units"]         += r["written_sales_units"]
-        w["written_sales_dollars"]        = round(w["written_sales_dollars"]    + r["written_sales_dollars"], 2)
-        w["written_gm_dollar"]            = round(w["written_gm_dollar"]         + r["written_gm_dollar"], 2)
-        w["written_sales_cost"]           = round(w["written_sales_cost"]        + r["written_sales_cost"], 2)
-        w["bop_units"]                   += r["bop_units"]
-        w["eop_units"]                   += r["eop_units"]
-        w["total_receipt_units"]         += r["total_receipt_units"]
-        w["recomm_receipt_units"]        += r["recomm_receipt_units"]
-        w["on_order_placed_total_unit"]  += r["on_order_placed_total_unit"]
+        w["written_sales_units"]          += r["written_sales_units"]
+        w["written_sales_dollars"]         = round(w["written_sales_dollars"]  + r["written_sales_dollars"], 2)
+        w["written_gm_dollar"]             = round(w["written_gm_dollar"]      + r["written_gm_dollar"], 2)
+        w["written_sales_cost"]            = round(w["written_sales_cost"]     + r["written_sales_cost"], 2)
+        w["bop_units"]                    += r["bop_units"]
+        w["eop_units"]                    += r["eop_units"]
+        w["total_receipt_units"]          += r["total_receipt_units"]
+        w["recomm_receipt_units"]         += r["recomm_receipt_units"]
+        w["on_order_placed_total_unit"]   += r["on_order_placed_total_unit"]
+        w["on_order_unplaced_total_unit"] += r.get("on_order_unplaced_total_unit", 0)
+        w["actual_sales_units"]           += r.get("actual_sales_units", 0)
+        w["actual_sales_dollars"]          = round(w["actual_sales_dollars"] + r.get("actual_sales_dollars", 0.0), 2)
+        w["actual_sales_cost"]             = round(w["actual_sales_cost"]    + r.get("actual_sales_cost", 0.0), 2)
+        w["markdown_units"]               += r.get("markdown_units", 0)
+        w["markdown_dollars"]              = round(w["markdown_dollars"]    + r.get("markdown_dollars", 0.0), 2)
+        w["ly_sales_units"]               += r.get("ly_sales_units", 0)
+        w["ly_sales_dollars"]              = round(w["ly_sales_dollars"]   + r.get("ly_sales_dollars", 0.0), 2)
+        w["otb_units"]                    += r.get("otb_units", 0)
+        w["otb_dollars"]                   = round(w["otb_dollars"]        + r.get("otb_dollars", 0.0), 2)
         if r["_modified"]:
             w["_modified"] = True
+
+    # Derive remaining fields after aggregation
+    for w in weeks.values():
+        if w["written_sales_units"] > 0:
+            w["written_aur"] = round(w["written_sales_dollars"] / w["written_sales_units"], 2)
+        if w["written_sales_dollars"] > 0:
+            w["written_gm_perc"] = round(w["written_gm_dollar"] / w["written_sales_dollars"], 4)
+        w["wos"] = round(w["eop_units"] / w["written_sales_units"], 2) if w["written_sales_units"] > 0 else 99.0
+        avail = w["bop_units"] + w["total_receipt_units"]
+        w["sell_through_perc"] = round(w["actual_sales_units"] / avail, 4) if avail > 0 and w.get("actualised") else 0.0
+        if w.get("actualised") and w["written_sales_units"] > 0:
+            w["variance_units"]      = w["written_sales_units"] - w["actual_sales_units"]
+            w["variance_dollars"]    = round(w["written_sales_dollars"] - w["actual_sales_dollars"], 2)
+            w["variance_units_perc"] = round(w["variance_units"] / w["written_sales_units"], 4)
+        ly_u = w["ly_sales_units"]; ly_d = w["ly_sales_dollars"]
+        w["ly_units_var"]        = w["written_sales_units"] - ly_u
+        w["ly_dollars_var"]      = round(w["written_sales_dollars"] - ly_d, 2)
+        w["ly_units_var_perc"]   = round(w["ly_units_var"]   / ly_u, 4) if ly_u > 0 else 0.0
+        w["ly_dollars_var_perc"] = round(w["ly_dollars_var"] / ly_d, 4) if ly_d > 0 else 0.0
 
     return sorted(weeks.values(), key=lambda x: x["current_week"])
 
@@ -180,3 +232,11 @@ def restore(snap_id: int):
     if not ok:
         raise HTTPException(404, "Snapshot not found")
     return {"restored": snap_id}
+
+
+@router.delete("/snapshots/{snap_id}")
+def remove_snapshot(snap_id: int):
+    ok = delete_snapshot(snap_id)
+    if not ok:
+        raise HTTPException(404, "Snapshot not found")
+    return {"deleted": snap_id}

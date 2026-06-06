@@ -96,6 +96,15 @@ def generate_wp_data() -> List[Dict]:
                 oo_placed = round(receipt_units * 0.6)
                 oo_unplaced = round(receipt_units * 0.4)
 
+                # Actuals for past weeks (202501–202519); 0 for future weeks
+                is_past = week_num < 20
+                actual_units   = round(units * random.uniform(0.78, 1.08)) if is_past else 0
+                actual_dollars = round(actual_units * aur, 2)
+                actual_cost    = round(actual_units * m["auc"], 2)
+                # Markdown: units sold at a promotional price
+                md_units   = round(units * dr)
+                md_dollars = round(md_units * m["air"] * dr, 2)
+
                 rows.append({
                     "hierarchy_code": hc,
                     "l1_name": h["l1_name"],
@@ -120,7 +129,12 @@ def generate_wp_data() -> List[Dict]:
                     "on_order_unplaced_total_unit": oo_unplaced,
                     "total_receipt_units": receipt_units,
                     "recomm_receipt_units": max(0, round(units * 1.05 - current_bop * 0.3)),
-                    "actualised": week_num < 20,
+                    "actualised": is_past,
+                    "actual_sales_units":   actual_units,
+                    "actual_sales_dollars": actual_dollars,
+                    "actual_sales_cost":    actual_cost,
+                    "markdown_units":       md_units,
+                    "markdown_dollars":     md_dollars,
                 })
     return rows
 
@@ -270,6 +284,16 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     if row["written_sales_dollars"] > 0:
         row["written_gm_perc"] = round(row["written_gm_dollar"] / row["written_sales_dollars"], 4)
     row["recomm_receipt_units"] = max(0, round(units * 1.05 - row["bop_units"] * 0.3))
+    # Re-derive analytics fields after override
+    row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
+    avail = row["bop_units"] + row["total_receipt_units"]
+    row["sell_through_perc"] = round(row["actual_sales_units"] / avail, 4) if avail > 0 and row.get("actualised") else 0.0
+    row["otb_units"]   = row["on_order_unplaced_total_unit"]
+    row["otb_dollars"] = round(row["otb_units"] * auc, 2)
+    if row.get("actualised"):
+        row["variance_units"]      = row["written_sales_units"] - row["actual_sales_units"]
+        row["variance_dollars"]    = round(row["written_sales_dollars"] - row["actual_sales_dollars"], 2)
+        row["variance_units_perc"] = round(row["variance_units"] / row["written_sales_units"], 4) if row["written_sales_units"] > 0 else 0.0
     row["_modified"] = True
     return row
 
@@ -309,6 +333,11 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
                 "on_order_placed_total_unit":   0,
                 "on_order_unplaced_total_unit": 0,
                 "actualised":  r["actualised"],
+                "actual_sales_units":   0,
+                "actual_sales_dollars": 0.0,
+                "actual_sales_cost":    0.0,
+                "markdown_units":       0,
+                "markdown_dollars":     0.0,
                 "_modified":   False,
             }
         b = buckets[key]
@@ -324,12 +353,61 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         b["recomm_receipt_units"]        += r["recomm_receipt_units"]
         b["on_order_placed_total_unit"]  += r["on_order_placed_total_unit"]
         b["on_order_unplaced_total_unit"]+= r["on_order_unplaced_total_unit"]
+        b["actual_sales_units"]          += r["actual_sales_units"]
+        b["actual_sales_dollars"]         = round(b["actual_sales_dollars"] + r["actual_sales_dollars"], 2)
+        b["actual_sales_cost"]            = round(b["actual_sales_cost"]    + r["actual_sales_cost"], 2)
+        b["markdown_units"]              += r["markdown_units"]
+        b["markdown_dollars"]             = round(b["markdown_dollars"]     + r["markdown_dollars"], 2)
 
-    for b in buckets.values():
+    # ── LY lookup (keyed same way as buckets) ────────────────────────────────────
+    _ly: Dict[str, Dict] = {}
+    for r in TY_LY_DATA:
+        if hc_filter and r["hierarchy_code"] != hc_filter:
+            continue
+        if ch_filter and r["channel"] != ch_filter:
+            continue
+        k = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+        if k not in _ly:
+            _ly[k] = {"ly_units": 0, "ly_dollars": 0.0}
+        _ly[k]["ly_units"]   += r["ly_units"]
+        _ly[k]["ly_dollars"]  = round(_ly[k]["ly_dollars"] + r["ly_dollars"], 2)
+
+    for key, b in buckets.items():
+        # AUR / GM%
         if b["written_sales_units"] > 0:
             b["written_aur"] = round(b["written_sales_dollars"] / b["written_sales_units"], 2)
         if b["written_sales_dollars"] > 0:
             b["written_gm_perc"] = round(b["written_gm_dollar"] / b["written_sales_dollars"], 4)
+
+        # WOS (Weeks of Supply)
+        b["wos"] = round(b["eop_units"] / b["written_sales_units"], 2) if b["written_sales_units"] > 0 else 99.0
+
+        # Sell-Through % (only meaningful for actualised weeks)
+        avail = b["bop_units"] + b["total_receipt_units"]
+        b["sell_through_perc"] = round(b["actual_sales_units"] / avail, 4) if avail > 0 and b["actualised"] else 0.0
+
+        # OTB
+        b["otb_units"]   = b["on_order_unplaced_total_unit"]
+        b["otb_dollars"] = round(b["otb_units"] * b["written_auc"], 2)
+
+        # Plan vs Actual variance
+        if b["actualised"]:
+            b["variance_units"]      = b["written_sales_units"] - b["actual_sales_units"]
+            b["variance_dollars"]    = round(b["written_sales_dollars"] - b["actual_sales_dollars"], 2)
+            b["variance_units_perc"] = round(b["variance_units"] / b["written_sales_units"], 4) if b["written_sales_units"] > 0 else 0.0
+        else:
+            b["variance_units"]      = None
+            b["variance_dollars"]    = None
+            b["variance_units_perc"] = None
+
+        # LY
+        ly = _ly.get(key, {"ly_units": 0, "ly_dollars": 0.0})
+        b["ly_sales_units"]      = ly["ly_units"]
+        b["ly_sales_dollars"]    = ly["ly_dollars"]
+        b["ly_units_var"]        = b["written_sales_units"] - ly["ly_units"]
+        b["ly_dollars_var"]      = round(b["written_sales_dollars"] - ly["ly_dollars"], 2)
+        b["ly_units_var_perc"]   = round(b["ly_units_var"]   / ly["ly_units"],   4) if ly["ly_units"]   > 0 else 0.0
+        b["ly_dollars_var_perc"] = round(b["ly_dollars_var"] / ly["ly_dollars"], 4) if ly["ly_dollars"] > 0 else 0.0
 
     for key, ovr in OVERRIDES.items():
         if key in buckets:
@@ -359,6 +437,13 @@ def restore_snapshot(snap_id: int) -> bool:
     OVERRIDES.clear()
     OVERRIDES.update({k: dict(v) for k, v in snap["overrides"].items()})
     return True
+
+
+def delete_snapshot(snap_id: int) -> bool:
+    global SNAPSHOTS
+    before = len(SNAPSHOTS)
+    SNAPSHOTS = [s for s in SNAPSHOTS if s["id"] != snap_id]
+    return len(SNAPSHOTS) < before
 
 
 def save_snapshot(name: str) -> Dict:

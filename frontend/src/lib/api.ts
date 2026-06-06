@@ -60,6 +60,10 @@ export async function restoreSnapshotAPI(snap_id: number) {
   await fetch(`${BASE}/wp/snapshots/${snap_id}/restore`, { method: "PUT" });
 }
 
+export async function deleteSnapshotAPI(snap_id: number) {
+  await fetch(`${BASE}/wp/snapshots/${snap_id}`, { method: "DELETE" });
+}
+
 export async function fetchTYLYByWeek(params?: Record<string, string>) {
   const qs = params ? "?" + new URLSearchParams(params).toString() : "";
   const res = await fetch(`${BASE}/ty-ly/by-week${qs}`);
