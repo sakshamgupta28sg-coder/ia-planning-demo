@@ -198,11 +198,15 @@ def generate_wp_data() -> List[Dict]:
         _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(demand_index.get((hc, ch, fw), 0) for fw in future_wks)
 
     # ── Pass 2: backfill recomm_receipt_units (Rolling OTB Forward Coverage) ──
+    # Only meaningful for open planning weeks — zero out locked/actualised weeks.
     for r in rows:
-        r["recomm_receipt_units"] = _compute_recomm_receipt(
-            r["hierarchy_code"], r["channel"], r["current_week"],
-            r["bop_units"], r["on_order_placed_total_unit"],
-        )
+        if r["actualised"] or r.get("is_ongoing"):
+            r["recomm_receipt_units"] = 0
+        else:
+            r["recomm_receipt_units"] = _compute_recomm_receipt(
+                r["hierarchy_code"], r["channel"], r["current_week"],
+                r["bop_units"], r["on_order_placed_total_unit"],
+            )
 
     return rows
 
@@ -361,10 +365,13 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     row["written_gm_dollar"]  = round(row["written_sales_dollars"] - row["written_sales_cost"], 2)
     if row["written_sales_dollars"] > 0:
         row["written_gm_perc"] = round(row["written_gm_dollar"] / row["written_sales_dollars"], 4)
-    row["recomm_receipt_units"] = _compute_recomm_receipt(
-        row["hierarchy_code"], row["channel"], row["current_week"],
-        row["bop_units"], row["on_order_placed_total_unit"],
-    )
+    if not row.get("actualised") and not row.get("is_ongoing"):
+        row["recomm_receipt_units"] = _compute_recomm_receipt(
+            row["hierarchy_code"], row["channel"], row["current_week"],
+            row["bop_units"], row["on_order_placed_total_unit"],
+        )
+    else:
+        row["recomm_receipt_units"] = 0
     # Re-derive analytics fields after override
     row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
     avail = row["bop_units"] + row["total_receipt_units"]
