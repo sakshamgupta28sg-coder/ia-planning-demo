@@ -107,6 +107,21 @@ export async function deleteSKU(hierarchy_code: number) {
   return res.json();
 }
 
+export async function fetchSKUSettings() {
+  const res = await fetch(`${BASE}/wp/sku-settings`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function updateSKUSetting(hierarchy_code: number, field: string, value: number) {
+  const res = await fetch(`${BASE}/wp/sku-settings/${hierarchy_code}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ field, value }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function topDownDistribute(body: {
   hierarchy_codes: number[];
   channels: string[];

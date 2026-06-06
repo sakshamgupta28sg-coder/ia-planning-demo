@@ -87,6 +87,18 @@ def _dr_perc(week_num: int, peak_week: int) -> float:
     return round(random.uniform(0.25, 0.40), 4)
 
 
+# Per-SKU setting overrides loaded from DB at startup (field → value).
+# Empty until _load_sku_settings() runs after DB init.
+_SKU_SETTINGS_OVERRIDES: Dict[int, Dict] = {}
+
+
+def get_effective_metrics(hc: int) -> Dict:
+    """Base HIERARCHY_METRICS merged with any user-persisted SKU setting overrides."""
+    base = dict(HIERARCHY_METRICS[hc])
+    base.update(_SKU_SETTINGS_OVERRIDES.get(hc, {}))
+    return base
+
+
 # Populated by generate_wp_data(); keyed (hc, ch, wk) → sum of planned units
 # over the look-ahead window [wk+1 … wk+lead_time_weeks+safety_weeks].
 _FORWARD_DEMAND_INDEX: Dict[tuple, int] = {}
@@ -102,7 +114,7 @@ def _compute_recomm_receipt(hc: int, ch: str, wk: int, bop_units: int, oo_placed
 
     Rounded *up* to nearest case-pack; floored at 0.
     """
-    m = HIERARCHY_METRICS[hc]
+    m = get_effective_metrics(hc)
     look_ahead = m["lead_time_weeks"] + m["safety_weeks"]
     if look_ahead <= 0:
         return 0
@@ -319,9 +331,72 @@ from database import (
     db_get_overrides, db_upsert_override, db_clear_overrides, db_replace_overrides,
     db_batch_upsert_overrides,
     db_list_snapshots, db_get_snapshot, db_insert_snapshot, db_delete_snapshot,
+    db_get_all_sku_settings, db_upsert_sku_setting,
 )
 
 init_db()  # create tables on first import; no-op if already exist
+
+# ── Per-SKU editable settings ──────────────────────────────────────────────────
+EDITABLE_SKU_FIELDS = {"case_pack", "lead_time_weeks", "safety_weeks", "target_wos"}
+
+
+def recompute_recomm_for_sku(hc: int):
+    """Rebuild forward demand index + recomm_receipt for one SKU after settings change."""
+    m = get_effective_metrics(hc)
+    look_ahead = m["lead_time_weeks"] + m["safety_weeks"]
+    wk_pos = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
+
+    # Rebuild demand map for this SKU from WP_DATA
+    demand_map: Dict[tuple, int] = {
+        (hc, r["channel"], r["current_week"]): r["written_sales_units"]
+        for r in WP_DATA if r["hierarchy_code"] == hc
+    }
+
+    # Rewrite forward demand index entries for this SKU only
+    for ch in CHANNELS:
+        for wk in FISCAL_WEEKS:
+            idx = wk_pos[wk]
+            future_wks = FISCAL_WEEKS[idx + 1 : idx + 1 + look_ahead]
+            _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(
+                demand_map.get((hc, ch, fw), 0) for fw in future_wks
+            )
+
+    # Recompute recomm_receipt_units for all rows of this SKU
+    for r in WP_DATA:
+        if r["hierarchy_code"] != hc:
+            continue
+        if r["actualised"] or r.get("is_ongoing"):
+            r["recomm_receipt_units"] = 0
+        else:
+            r["recomm_receipt_units"] = _compute_recomm_receipt(
+                hc, r["channel"], r["current_week"],
+                r["bop_units"], r["on_order_placed_total_unit"],
+            )
+
+
+def update_sku_setting(hc: int, field: str, value) -> Dict:
+    """Update one editable SKU field, persist to DB, recompute recomm. Returns effective metrics."""
+    global _SKU_SETTINGS_OVERRIDES
+    if field not in EDITABLE_SKU_FIELDS:
+        raise ValueError(f"'{field}' not editable. Allowed: {EDITABLE_SKU_FIELDS}")
+    current = dict(_SKU_SETTINGS_OVERRIDES.get(hc, {}))
+    current[field] = int(value)
+    db_upsert_sku_setting(hc, current)
+    _SKU_SETTINGS_OVERRIDES[hc] = current
+    recompute_recomm_for_sku(hc)
+    return get_effective_metrics(hc)
+
+
+def _load_sku_settings():
+    """Load persisted SKU setting overrides from DB and recompute affected SKUs."""
+    global _SKU_SETTINGS_OVERRIDES
+    _SKU_SETTINGS_OVERRIDES = {int(k): v for k, v in db_get_all_sku_settings().items()}
+    for hc in _SKU_SETTINGS_OVERRIDES:
+        if hc in HIERARCHY_METRICS:
+            recompute_recomm_for_sku(hc)
+
+
+_load_sku_settings()
 
 
 def _ovr_key(hc: int, wk: int, ch: str) -> str:

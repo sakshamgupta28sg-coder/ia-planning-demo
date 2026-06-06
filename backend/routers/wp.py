@@ -5,6 +5,7 @@ from dummy_data import (
     WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, CURRENT_WEEK, CATEGORIES,
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
     get_all_snapshots, apply_top_down,
+    get_effective_metrics, update_sku_setting, EDITABLE_SKU_FIELDS,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -184,6 +185,32 @@ def get_portfolio():
         b["avg_gm_perc"] = round(b["written_gm_dollar"] / td, 4) if td else 0
 
     return sorted(per_hc.values(), key=lambda x: x["hierarchy_code"])
+
+
+# ── SKU Settings ──────────────────────────────────────────────────────────────
+@router.get("/sku-settings")
+def get_sku_settings():
+    """Return effective settings (base + overrides) for all SKUs."""
+    return [
+        {"hierarchy_code": h["hierarchy_code"], **get_effective_metrics(h["hierarchy_code"])}
+        for h in HIERARCHIES
+    ]
+
+
+class SKUSettingRequest(BaseModel):
+    field: str
+    value: int = Field(ge=1)
+
+
+@router.put("/sku-settings/{hierarchy_code}")
+def put_sku_setting(hierarchy_code: int, body: SKUSettingRequest):
+    if body.field not in EDITABLE_SKU_FIELDS:
+        raise HTTPException(400, f"'{body.field}' not editable. Allowed: {EDITABLE_SKU_FIELDS}")
+    try:
+        effective = update_sku_setting(hierarchy_code, body.field, body.value)
+    except KeyError:
+        raise HTTPException(404, f"hierarchy_code {hierarchy_code} not found")
+    return {"hierarchy_code": hierarchy_code, **effective}
 
 
 # ── Edit row ──────────────────────────────────────────────────────────────────

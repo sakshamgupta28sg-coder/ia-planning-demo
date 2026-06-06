@@ -38,6 +38,31 @@ def init_db():
                 summary_data    TEXT    NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sku_settings (
+                hierarchy_code  INTEGER PRIMARY KEY,
+                data            TEXT    NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+# ── SKU Settings CRUD ──────────────────────────────────────────────────────────
+
+def db_get_all_sku_settings() -> Dict[int, Dict]:
+    """Return all per-SKU setting overrides keyed by hierarchy_code."""
+    with _conn() as conn:
+        rows = conn.execute("SELECT hierarchy_code, data FROM sku_settings").fetchall()
+    return {r["hierarchy_code"]: json.loads(r["data"]) for r in rows}
+
+
+def db_upsert_sku_setting(hierarchy_code: int, data: Dict):
+    """Insert or replace settings for one SKU."""
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sku_settings (hierarchy_code, data) VALUES (?, ?)",
+            (hierarchy_code, json.dumps(data)),
+        )
         conn.commit()
 
 

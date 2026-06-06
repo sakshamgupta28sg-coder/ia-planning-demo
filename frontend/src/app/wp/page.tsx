@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import {
   fetchWPByWeek, fetchWPSummary, fetchWPFilters, fetchPortfolio,
   editWPRow, resetOverrides, fetchSnapshots, saveSnapshotAPI, restoreSnapshotAPI, deleteSnapshotAPI,
-  topDownDistribute,
+  topDownDistribute, fetchSKUSettings, updateSKUSetting,
 } from "@/lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -50,6 +50,13 @@ type Filters = {
   channels: string[];
   weeks: number[];
   categories: string[];
+};
+type SKUSetting = {
+  hierarchy_code: number;
+  case_pack: number;
+  lead_time_weeks: number;
+  safety_weeks: number;
+  target_wos: number;
 };
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -219,6 +226,7 @@ export default function WPPage() {
   const [topDownTarget, setTopDownTarget] = useState("");
   const [topDownField, setTopDownField] = useState<"written_sales_units" | "written_sales_dollars">("written_sales_units");
   const [topDownLoading, setTopDownLoading] = useState(false);
+  const [skuSettings, setSkuSettings] = useState<Record<number, SKUSetting>>({});
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
@@ -258,11 +266,17 @@ export default function WPPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canEdit, hcsKey, chsKey]);
 
+  const reloadSkuSettings = useCallback(async () => {
+    const list: SKUSetting[] = await fetchSKUSettings();
+    setSkuSettings(Object.fromEntries(list.map((s) => [s.hierarchy_code, s])));
+  }, []);
+
   useEffect(() => {
     fetchWPSummary({ baseline: "true" }).then(setBaselineSummary);
     fetchWPFilters().then(setFilters);
     fetchSnapshots().then(setSnapshots);
     reloadPortfolioAndSummary();
+    reloadSkuSettings();
   }, []);
 
   useEffect(() => { reloadRows(); }, [reloadRows]);
@@ -289,6 +303,16 @@ export default function WPPage() {
       reloadPortfolioAndSummary();
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "Edit failed");
+    }
+  }
+
+  async function handleSKUSettingEdit(hc: number, field: string, value: number) {
+    setEditError("");
+    try {
+      await updateSKUSetting(hc, field, value);
+      await Promise.all([reloadSkuSettings(), reloadRows()]);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "SKU setting update failed");
     }
   }
 
@@ -667,8 +691,8 @@ export default function WPPage() {
         <table className="w-full text-xs text-slate-300">
           <thead>
             <tr className="border-b border-slate-700 text-slate-400">
-              {["", "SKU", "Product", "Sales Units", "Sales $", "GM $", "GM %", "Status"].map((h) => (
-                <th key={h} className={`px-3 py-2 font-medium ${h === "" || h === "SKU" || h === "Product" ? "text-left" : "text-right"}`}>{h}</th>
+              {["", "SKU", "Product", "Sales Units", "Sales $", "GM $", "GM %", "Lead Time ✎", "Case Pack ✎", "Status"].map((h) => (
+                <th key={h} className={`px-3 py-2 font-medium ${h === "" || h === "SKU" || h === "Product" ? "text-left" : "text-right"} ${h.includes("✎") ? "text-blue-400" : ""}`}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -707,6 +731,8 @@ export default function WPPage() {
                   <td className="px-3 py-1.5 text-right font-semibold text-slate-200">{fmtD(dollars)}</td>
                   <td className="px-3 py-1.5 text-right font-semibold text-emerald-400">{fmtD(gm)}</td>
                   <td className="px-3 py-1.5 text-right font-semibold">{pct(gmPerc)}</td>
+                  <td className="px-3 py-1.5 text-right text-slate-600 text-[10px]">—</td>
+                  <td className="px-3 py-1.5 text-right text-slate-600 text-[10px]">—</td>
                   <td className="px-3 py-1.5 text-right">
                     {modified
                       ? <span className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">Modified</span>
@@ -744,6 +770,18 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right">{fmtD(p.written_sales_dollars)}</td>
                       <td className="px-3 py-1.5 text-right text-emerald-400">{fmtD(p.written_gm_dollar)}</td>
                       <td className="px-3 py-1.5 text-right">{pct(p.avg_gm_perc)}</td>
+                      <td className="px-3 py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
+                        <EditableNumber
+                          value={skuSettings[p.hierarchy_code]?.lead_time_weeks ?? 0}
+                          onCommit={(v) => handleSKUSettingEdit(p.hierarchy_code, "lead_time_weeks", v)}
+                        />
+                      </td>
+                      <td className="px-3 py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
+                        <EditableNumber
+                          value={skuSettings[p.hierarchy_code]?.case_pack ?? 0}
+                          onCommit={(v) => handleSKUSettingEdit(p.hierarchy_code, "case_pack", v)}
+                        />
+                      </td>
                       <td className="px-3 py-1.5 text-right">
                         {p._modified
                           ? <span className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">Modified</span>
