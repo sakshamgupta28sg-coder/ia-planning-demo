@@ -45,7 +45,7 @@ type PortfolioRow = {
 };
 type Summary = { total_written_sales_units: number; total_written_sales_dollars: number; total_written_gm_dollar: number; avg_written_gm_perc: number };
 type Snapshot = { id: number; name: string; created_at: string; overrides_count: number; summary: { total_sales_units: number; total_sales_dollars: number; total_gm_dollar: number; avg_gm_perc: number } };
-type Filters = { hierarchies: { hierarchy_code: number; l1_name: string; l2_name: string }[]; channels: string[] };
+type Filters = { hierarchies: { hierarchy_code: number; l1_name: string; l2_name: string }[]; channels: string[]; weeks: number[] };
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtD = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` : n >= 1_000 ? `$${(n / 1_000).toFixed(1)}K` : `$${n.toFixed(0)}`;
@@ -202,7 +202,9 @@ export default function WPPage() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [snapshotName, setSnapshotName] = useState("");
-  const [filters, setFilters] = useState<Filters>({ hierarchies: [], channels: [] });
+  const [filters, setFilters] = useState<Filters>({ hierarchies: [], channels: [], weeks: [] });
+  const [weekFrom, setWeekFrom] = useState<number | null>(null);
+  const [weekTo,   setWeekTo]   = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [editError, setEditError] = useState("");
@@ -221,8 +223,13 @@ export default function WPPage() {
 
   // Helper: is a row locked for editing (actualised or in-flight current week)
   const isLocked = (r: WPRow) => r.actualised || r.is_ongoing;
-  // Rows visible in the weekly table (filtered when planningOnly is on)
-  const displayRows = planningOnly ? rows.filter((r) => !isLocked(r)) : rows;
+  // Rows visible in the weekly table — respects planning-only toggle + week range filter
+  const displayRows = rows.filter((r) => {
+    if (planningOnly && isLocked(r)) return false;
+    if (weekFrom !== null && r.current_week < weekFrom) return false;
+    if (weekTo   !== null && r.current_week > weekTo)   return false;
+    return true;
+  });
 
   const reloadPortfolioAndSummary = useCallback(async () => {
     const [s, p] = await Promise.all([fetchWPSummary({}), fetchPortfolio()]);
@@ -478,7 +485,7 @@ export default function WPPage() {
         </div>
       </div>
 
-      {/* ── Filters (multi-select) ── */}
+      {/* ── Filters (multi-select + week range) ── */}
       <div className="flex gap-3 flex-wrap items-center">
         <MultiSelect
           label="Product"
@@ -492,6 +499,39 @@ export default function WPPage() {
           selected={selectedChannels}
           onChange={setSelectedChannels}
         />
+
+        {/* Week range */}
+        <div className="flex items-center gap-1.5">
+          <select
+            value={weekFrom ?? ""}
+            onChange={(e) => setWeekFrom(e.target.value ? Number(e.target.value) : null)}
+            className="bg-slate-800 border border-slate-600 text-xs text-slate-300 rounded px-2 py-1.5 outline-none focus:border-blue-500 cursor-pointer"
+          >
+            <option value="">From week</option>
+            {filters.weeks.map((w) => (
+              <option key={w} value={w}>Wk {String(w).slice(-2)}</option>
+            ))}
+          </select>
+          <span className="text-slate-600 text-xs">–</span>
+          <select
+            value={weekTo ?? ""}
+            onChange={(e) => setWeekTo(e.target.value ? Number(e.target.value) : null)}
+            className="bg-slate-800 border border-slate-600 text-xs text-slate-300 rounded px-2 py-1.5 outline-none focus:border-blue-500 cursor-pointer"
+          >
+            <option value="">To week</option>
+            {filters.weeks.map((w) => (
+              <option key={w} value={w}>Wk {String(w).slice(-2)}</option>
+            ))}
+          </select>
+          {(weekFrom !== null || weekTo !== null) && (
+            <button
+              onClick={() => { setWeekFrom(null); setWeekTo(null); }}
+              className="text-xs text-slate-500 hover:text-red-400 px-1 transition-colors"
+              title="Clear week filter"
+            >✕</button>
+          )}
+        </div>
+
         {canEdit && (
           <span className="text-xs text-emerald-400 bg-emerald-900/30 border border-emerald-800 px-2 py-1 rounded">
             ✏️ Editing: {displayHcLabel} · {displayChLabel}
