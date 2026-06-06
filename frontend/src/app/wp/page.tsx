@@ -457,14 +457,12 @@ export default function WPPage() {
   }
   function rowExceptionBg(r: WPRow) {
     if (r.is_ongoing) return "bg-orange-900/10";
-    if (r.actualised && r.variance_units_perc !== null) {
-      if (r.variance_units_perc > 0.15)  return "bg-red-900/20";    // actual badly below plan
-      if (r.variance_units_perc < -0.1)  return "bg-emerald-900/15"; // actual above plan
+    if (r.actualised) {
+      if ((r.variance_units_perc ?? 0) > 0.15) return "bg-red-900/20";
+      if ((r.variance_units_perc ?? 0) < -0.1)  return "bg-emerald-900/15";
     }
-    if (r.wos > 14) return "bg-amber-900/15";
-    if (r.wos > 0 && r.wos < 2) return "bg-red-900/15";
-    if (r._modified) return "bg-amber-900/10";
-    return "";
+    // Week-group stripe — all rows in the same week share one shade
+    return r.current_week % 2 === 0 ? "bg-slate-700/20" : "";
   }
 
   // ── CSV export ────────────────────────────────────────────────────────────────
@@ -933,7 +931,7 @@ export default function WPPage() {
                 const skuInfo = filters.hierarchies.find((h) => h.hierarchy_code === r.hierarchy_code);
                 const exBg = rowExceptionBg(r);
                 const locked = isLocked(r);
-                const baseClass = `transition-colors ${exBg || "hover:bg-slate-700/20"} border-b border-slate-700/50`;
+                const baseClass = `transition-colors ${exBg} hover:brightness-110 border-b border-slate-700/50`;
                 const wk = (
                   <td className={`px-3 py-1.5 font-mono ${r._modified ? "text-amber-400" : "text-slate-400"}`}>
                     {r.current_week}{r._modified && <span className="ml-1 text-[9px]">✎</span>}
@@ -1042,9 +1040,9 @@ export default function WPPage() {
           <div className="px-4 py-2 border-t border-slate-700 flex flex-wrap gap-4 text-[10px] text-slate-500">
             <span><span className="inline-block w-2 h-2 rounded-full bg-violet-400 mr-1" />● past week (actuals available, locked)</span>
             <span>⚡ ongoing week (in-flight, locked)</span>
-            <span><span className="inline-block w-2 h-2 rounded-full bg-red-600 mr-1" />red row = below plan &gt;15% or WOS&lt;2</span>
-            <span><span className="inline-block w-2 h-2 rounded-full bg-amber-600 mr-1" />amber row = WOS&gt;14</span>
-            <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-700 mr-1" />green row = tracking above plan</span>
+            <span><span className="inline-block w-2 h-2 rounded-full bg-red-600 mr-1" />red row = actuals below plan &gt;15%</span>
+            <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-700 mr-1" />green row = actuals above plan</span>
+            <span>WOS color in column: <span className="text-red-400">red</span> &lt;2 · <span className="text-amber-400">amber</span> &gt;14 · <span className="text-emerald-400">green</span> healthy</span>
             <span>🔒 = cell cannot be edited</span>
           </div>
         )}
