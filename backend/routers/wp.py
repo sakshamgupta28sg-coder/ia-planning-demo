@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 from dummy_data import (
-    WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, CURRENT_WEEK,
+    WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, CURRENT_WEEK, CATEGORIES,
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
     get_all_snapshots, apply_top_down,
 )
@@ -15,7 +15,7 @@ EDITABLE_FIELDS = {"written_sales_units", "written_sales_dollars", "on_order_pla
 # ── Filters ───────────────────────────────────────────────────────────────────
 @router.get("/filters")
 def get_filters():
-    return {"hierarchies": HIERARCHIES, "channels": CHANNELS, "weeks": FISCAL_WEEKS}
+    return {"hierarchies": HIERARCHIES, "channels": CHANNELS, "weeks": FISCAL_WEEKS, "categories": CATEGORIES}
 
 
 # ── By-week aggregation (supports portfolio + filtered view) ──────────────────

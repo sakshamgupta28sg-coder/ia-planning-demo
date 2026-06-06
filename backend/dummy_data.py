@@ -4,15 +4,18 @@ from typing import Dict, List
 random.seed(42)
 
 HIERARCHIES = [
-    {"hierarchy_code": 10001, "l1_name": "Footwear", "l2_name": "Running Shoes"},
-    {"hierarchy_code": 10002, "l1_name": "Footwear", "l2_name": "Casual Sneakers"},
-    {"hierarchy_code": 10003, "l1_name": "Footwear", "l2_name": "Ankle Boots"},
-    {"hierarchy_code": 10004, "l1_name": "Footwear", "l2_name": "Sandals"},
-    {"hierarchy_code": 10005, "l1_name": "Apparel", "l2_name": "Denim Jeans"},
-    {"hierarchy_code": 10006, "l1_name": "Apparel", "l2_name": "Graphic Tees"},
-    {"hierarchy_code": 10007, "l1_name": "Apparel", "l2_name": "Hoodies"},
-    {"hierarchy_code": 10008, "l1_name": "Apparel", "l2_name": "Activewear Shorts"},
+    {"hierarchy_code": 10001, "l1_name": "Footwear", "l2_name": "Running Shoes",      "sku_code": "FW-RUN-001"},
+    {"hierarchy_code": 10002, "l1_name": "Footwear", "l2_name": "Casual Sneakers",    "sku_code": "FW-CSN-002"},
+    {"hierarchy_code": 10003, "l1_name": "Footwear", "l2_name": "Ankle Boots",        "sku_code": "FW-BOT-003"},
+    {"hierarchy_code": 10004, "l1_name": "Footwear", "l2_name": "Sandals",            "sku_code": "FW-SND-004"},
+    {"hierarchy_code": 10005, "l1_name": "Apparel",  "l2_name": "Denim Jeans",        "sku_code": "AP-DNM-005"},
+    {"hierarchy_code": 10006, "l1_name": "Apparel",  "l2_name": "Graphic Tees",       "sku_code": "AP-TEE-006"},
+    {"hierarchy_code": 10007, "l1_name": "Apparel",  "l2_name": "Hoodies",            "sku_code": "AP-HOD-007"},
+    {"hierarchy_code": 10008, "l1_name": "Apparel",  "l2_name": "Activewear Shorts",  "sku_code": "AP-ACT-008"},
 ]
+
+# Ordered unique categories
+CATEGORIES = list(dict.fromkeys(h["l1_name"] for h in HIERARCHIES))
 
 CHANNELS = ["Ecom", "Indirect", "Store"]
 SUB_CHANNELS = {

@@ -45,7 +45,12 @@ type PortfolioRow = {
 };
 type Summary = { total_written_sales_units: number; total_written_sales_dollars: number; total_written_gm_dollar: number; avg_written_gm_perc: number };
 type Snapshot = { id: number; name: string; created_at: string; overrides_count: number; summary: { total_sales_units: number; total_sales_dollars: number; total_gm_dollar: number; avg_gm_perc: number } };
-type Filters = { hierarchies: { hierarchy_code: number; l1_name: string; l2_name: string }[]; channels: string[]; weeks: number[] };
+type Filters = {
+  hierarchies: { hierarchy_code: number; l1_name: string; l2_name: string; sku_code: string }[];
+  channels: string[];
+  weeks: number[];
+  categories: string[];
+};
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtD = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` : n >= 1_000 ? `$${(n / 1_000).toFixed(1)}K` : `$${n.toFixed(0)}`;
@@ -195,6 +200,7 @@ function Delta({ current, baseline, isDollar = false }: { current: number; basel
 export default function WPPage() {
   const [selectedHcs, setSelectedHcs] = useState<string[]>([]);
   const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<string>("");
   const [rows, setRows] = useState<WPRow[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioRow[]>([]);
   const [currentSummary, setCurrentSummary] = useState<Summary | null>(null);
@@ -202,7 +208,7 @@ export default function WPPage() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [snapshotName, setSnapshotName] = useState("");
-  const [filters, setFilters] = useState<Filters>({ hierarchies: [], channels: [], weeks: [] });
+  const [filters, setFilters] = useState<Filters>({ hierarchies: [], channels: [], weeks: [], categories: [] });
   const [weekFrom, setWeekFrom] = useState<number | null>(null);
   const [weekTo,   setWeekTo]   = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
@@ -349,27 +355,77 @@ export default function WPPage() {
   })();
 
   const hasEdits = portfolio.some((p) => p._modified);
-  const selectedProduct = selectedHcs.length === 1
-    ? filters.hierarchies.find((h) => String(h.hierarchy_code) === selectedHcs[0])
-    : null;
-  const displayHcLabel = selectedHcs.length === 1
-    ? (selectedProduct?.l2_name ?? selectedHcs[0])
-    : `${selectedHcs.length} Products`;
-  const displayChLabel = selectedChannels.length === 1
-    ? selectedChannels[0]
-    : `${selectedChannels.length} Channels`;
 
-  // Options for multi-select dropdowns
-  const hcOptions = filters.hierarchies.map((h) => ({
+  // Options for multi-select dropdowns — filtered by selected category
+  const categoryHierarchies = selectedCategory
+    ? filters.hierarchies.filter((h) => h.l1_name === selectedCategory)
+    : filters.hierarchies;
+  const hcOptions = categoryHierarchies.map((h) => ({
     value: String(h.hierarchy_code),
-    label: h.l2_name,
+    label: `${h.sku_code} · ${h.l2_name}`,
   }));
   const chOptions = filters.channels.map((c) => ({ value: c, label: c }));
 
-  // Filter portfolio table by selected hierarchies (if any)
-  const visiblePortfolio = selectedHcs.length > 0
-    ? portfolio.filter((p) => selectedHcs.includes(String(p.hierarchy_code)))
+  // Select all products in the active category
+  function selectAllInCategory() {
+    setSelectedHcs(categoryHierarchies.map((h) => String(h.hierarchy_code)));
+  }
+
+  // Portfolio rows scoped to active category
+  const categoryPortfolio = selectedCategory
+    ? portfolio.filter((p) => {
+        const h = filters.hierarchies.find((h) => h.hierarchy_code === p.hierarchy_code);
+        return h?.l1_name === selectedCategory;
+      })
     : portfolio;
+
+  // Further filter by selected HCs (for highlighting)
+  const visiblePortfolio = selectedHcs.length > 0
+    ? categoryPortfolio.filter((p) => selectedHcs.includes(String(p.hierarchy_code)))
+    : categoryPortfolio;
+
+  // Build category-grouped portfolio for the table
+  const portfolioGroups = (() => {
+    const source = categoryPortfolio;
+    const seen = new Map<string, { rows: PortfolioRow[]; units: number; dollars: number; gm: number; modified: boolean }>();
+    for (const p of source) {
+      const h = filters.hierarchies.find((hh) => hh.hierarchy_code === p.hierarchy_code);
+      const cat = h?.l1_name ?? "Other";
+      if (!seen.has(cat)) seen.set(cat, { rows: [], units: 0, dollars: 0, gm: 0, modified: false });
+      const g = seen.get(cat)!;
+      g.rows.push(p);
+      g.units   += p.written_sales_units;
+      g.dollars += p.written_sales_dollars;
+      g.gm      += p.written_gm_dollar;
+      if (p._modified) g.modified = true;
+    }
+    return Array.from(seen.entries()).map(([cat, g]) => ({
+      cat,
+      rows: g.rows,
+      units: g.units,
+      dollars: g.dollars,
+      gm: g.gm,
+      gmPerc: g.dollars > 0 ? g.gm / g.dollars : 0,
+      modified: g.modified,
+    }));
+  })();
+
+  // Labels for editing context badge
+  const selectedProduct = selectedHcs.length === 1
+    ? filters.hierarchies.find((h) => String(h.hierarchy_code) === selectedHcs[0])
+    : null;
+  const allCategoryHcsSelected =
+    selectedCategory &&
+    categoryHierarchies.length > 0 &&
+    categoryHierarchies.every((h) => selectedHcs.includes(String(h.hierarchy_code)));
+  const displayHcLabel =
+    selectedHcs.length === 0 ? "No product" :
+    allCategoryHcsSelected ? `${selectedCategory} (all)` :
+    selectedHcs.length === 1 ? (selectedProduct ? `${selectedProduct.sku_code} · ${selectedProduct.l2_name}` : selectedHcs[0]) :
+    `${selectedHcs.length} Products`;
+  const displayChLabel = selectedChannels.length === 1
+    ? selectedChannels[0]
+    : `${selectedChannels.length} Channels`;
 
   // ── Exception / coloring helpers ─────────────────────────────────────────────
   // variance = Plan − Actual: positive = below plan = BAD (red), negative = above plan = GOOD (green)
@@ -451,7 +507,7 @@ export default function WPPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">Working Plan</h1>
-          <p className="text-xs text-slate-500 mt-0.5">FY2025 · select at least 1 product + 1 channel to edit · edits broadcast to all selected</p>
+          <p className="text-xs text-slate-500 mt-0.5">FY2026 · select at least 1 product + 1 channel to edit · edits broadcast to all selected</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {editError && <span className="text-xs text-red-400 bg-red-900/30 px-2 py-1 rounded">{editError}</span>}
@@ -485,8 +541,41 @@ export default function WPPage() {
         </div>
       </div>
 
-      {/* ── Filters (multi-select + week range) ── */}
+      {/* ── Filters (category → product → channel → week range) ── */}
       <div className="flex gap-3 flex-wrap items-center">
+        {/* Category filter */}
+        <div className="flex items-center gap-1.5">
+          <select
+            value={selectedCategory}
+            onChange={(e) => {
+              const cat = e.target.value;
+              setSelectedCategory(cat);
+              // Drop selected HCs not in the new category
+              if (cat) {
+                const catHcs = new Set(
+                  filters.hierarchies.filter((h) => h.l1_name === cat).map((h) => String(h.hierarchy_code))
+                );
+                setSelectedHcs((prev) => prev.filter((h) => catHcs.has(h)));
+              }
+            }}
+            className="bg-slate-800 border border-slate-600 text-sm text-slate-200 rounded px-3 py-1.5 outline-none focus:border-blue-500 cursor-pointer"
+          >
+            <option value="">All Categories</option>
+            {filters.categories.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+          {selectedCategory && (
+            <button
+              onClick={selectAllInCategory}
+              title={`Select all ${selectedCategory} products`}
+              className="text-xs bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 px-2.5 py-1.5 rounded transition-colors whitespace-nowrap"
+            >
+              Select all
+            </button>
+          )}
+        </div>
+
         <MultiSelect
           label="Product"
           options={hcOptions}
@@ -582,52 +671,99 @@ export default function WPPage() {
             {hasEdits && <span className="ml-2 text-xs text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded">edits active</span>}
           </h2>
           <span className="text-xs text-slate-500">
-            {selectedHcs.length > 0 ? `${visiblePortfolio.length} of ${portfolio.length} products` : "Click rows to filter · select 1 to edit"}
+            {selectedCategory ? `${selectedCategory} · ` : ""}
+            {selectedHcs.length > 0 ? `${selectedHcs.length} selected` : "Click rows to select · select all to plan by category"}
           </span>
         </div>
         <table className="w-full text-xs text-slate-300">
           <thead>
             <tr className="border-b border-slate-700 text-slate-400">
-              {["", "Product", "Category", "Sales Units", "Sales $", "GM $", "GM %", "Status"].map((h) => (
-                <th key={h} className={`px-3 py-2 font-medium ${h === "" || h === "Product" || h === "Category" ? "text-left" : "text-right"}`}>{h}</th>
+              {["", "SKU", "Product", "Sales Units", "Sales $", "GM $", "GM %", "Status"].map((h) => (
+                <th key={h} className={`px-3 py-2 font-medium ${h === "" || h === "SKU" || h === "Product" ? "text-left" : "text-right"}`}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {(visiblePortfolio.length > 0 ? visiblePortfolio : portfolio).map((p) => {
-              const isSelected = selectedHcs.includes(String(p.hierarchy_code));
-              return (
+            {portfolioGroups.map(({ cat, rows: groupRows, units, dollars, gm, gmPerc, modified }) => {
+              const allGroupSelected = groupRows.every((p) => selectedHcs.includes(String(p.hierarchy_code)));
+              const someGroupSelected = groupRows.some((p) => selectedHcs.includes(String(p.hierarchy_code)));
+              return [
+                /* Category total row */
                 <tr
-                  key={p.hierarchy_code}
-                  onClick={() => toggleHc(String(p.hierarchy_code))}
-                  className={`border-b border-slate-700/50 cursor-pointer transition-colors ${
-                    isSelected ? "bg-blue-900/30" : "hover:bg-slate-700/40"
-                  } ${p._modified ? "bg-amber-900/10" : ""}`}
+                  key={`cat-${cat}`}
+                  className="bg-slate-700/40 border-b border-slate-600 cursor-pointer hover:bg-slate-700/60 transition-colors"
+                  onClick={() => {
+                    const hcsInGroup = groupRows.map((p) => String(p.hierarchy_code));
+                    if (allGroupSelected) {
+                      setSelectedHcs((prev) => prev.filter((h) => !hcsInGroup.includes(h)));
+                    } else {
+                      setSelectedHcs((prev) => [...new Set([...prev, ...hcsInGroup])]);
+                    }
+                  }}
+                  title={allGroupSelected ? `Deselect all ${cat}` : `Select all ${cat}`}
                 >
                   <td className="px-3 py-1.5 w-8">
                     <input
                       type="checkbox"
                       readOnly
-                      checked={isSelected}
+                      checked={allGroupSelected}
+                      ref={(el) => { if (el) el.indeterminate = !allGroupSelected && someGroupSelected; }}
                       className="accent-blue-500 w-3.5 h-3.5 pointer-events-none"
                     />
                   </td>
-                  <td className="px-3 py-1.5 font-medium text-white">{p.l2_name}</td>
-                  <td className="px-3 py-1.5 text-slate-400">{p.l1_name}</td>
-                  <td className="px-3 py-1.5 text-right">
-                    {fmtU(p.written_sales_units)}
-                    {p._modified && <span className="text-amber-400 text-[10px] ml-1">✎</span>}
+                  <td className="px-3 py-1.5 font-semibold text-slate-200 tracking-wide" colSpan={2}>{cat}</td>
+                  <td className="px-3 py-1.5 text-right font-semibold text-slate-200">
+                    {fmtU(units)}{modified && <span className="text-amber-400 text-[10px] ml-1">✎</span>}
                   </td>
-                  <td className="px-3 py-1.5 text-right">{fmtD(p.written_sales_dollars)}</td>
-                  <td className="px-3 py-1.5 text-right text-emerald-400">{fmtD(p.written_gm_dollar)}</td>
-                  <td className="px-3 py-1.5 text-right">{pct(p.avg_gm_perc)}</td>
+                  <td className="px-3 py-1.5 text-right font-semibold text-slate-200">{fmtD(dollars)}</td>
+                  <td className="px-3 py-1.5 text-right font-semibold text-emerald-400">{fmtD(gm)}</td>
+                  <td className="px-3 py-1.5 text-right font-semibold">{pct(gmPerc)}</td>
                   <td className="px-3 py-1.5 text-right">
-                    {p._modified
+                    {modified
                       ? <span className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">Modified</span>
                       : <span className="text-slate-600 text-[10px]">—</span>}
                   </td>
-                </tr>
-              );
+                </tr>,
+                /* Individual SKU rows */
+                ...groupRows.map((p) => {
+                  const isSelected = selectedHcs.includes(String(p.hierarchy_code));
+                  const skuInfo = filters.hierarchies.find((h) => h.hierarchy_code === p.hierarchy_code);
+                  return (
+                    <tr
+                      key={p.hierarchy_code}
+                      onClick={() => toggleHc(String(p.hierarchy_code))}
+                      className={`border-b border-slate-700/50 cursor-pointer transition-colors ${
+                        isSelected ? "bg-blue-900/25" : "hover:bg-slate-700/30"
+                      } ${p._modified ? "bg-amber-900/10" : ""}`}
+                    >
+                      <td className="px-3 py-1.5 w-8 pl-5">
+                        <input
+                          type="checkbox"
+                          readOnly
+                          checked={isSelected}
+                          className="accent-blue-500 w-3.5 h-3.5 pointer-events-none"
+                        />
+                      </td>
+                      <td className="px-3 py-1.5 font-mono text-slate-400 text-[10px] whitespace-nowrap">
+                        {skuInfo?.sku_code ?? "—"}
+                      </td>
+                      <td className="px-3 py-1.5 text-white pl-4">{p.l2_name}</td>
+                      <td className="px-3 py-1.5 text-right">
+                        {fmtU(p.written_sales_units)}
+                        {p._modified && <span className="text-amber-400 text-[10px] ml-1">✎</span>}
+                      </td>
+                      <td className="px-3 py-1.5 text-right">{fmtD(p.written_sales_dollars)}</td>
+                      <td className="px-3 py-1.5 text-right text-emerald-400">{fmtD(p.written_gm_dollar)}</td>
+                      <td className="px-3 py-1.5 text-right">{pct(p.avg_gm_perc)}</td>
+                      <td className="px-3 py-1.5 text-right">
+                        {p._modified
+                          ? <span className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">Modified</span>
+                          : <span className="text-slate-600 text-[10px]">—</span>}
+                      </td>
+                    </tr>
+                  );
+                }),
+              ];
             })}
           </tbody>
         </table>
@@ -794,7 +930,7 @@ export default function WPPage() {
             </thead>
             <tbody>
               {displayRows.map((r) => {
-                const prod = filters.hierarchies.find((h) => h.hierarchy_code === r.hierarchy_code)?.l2_name ?? String(r.hierarchy_code);
+                const skuInfo = filters.hierarchies.find((h) => h.hierarchy_code === r.hierarchy_code);
                 const exBg = rowExceptionBg(r);
                 const locked = isLocked(r);
                 const baseClass = `transition-colors ${exBg || "hover:bg-slate-700/20"} border-b border-slate-700/50`;
@@ -805,7 +941,12 @@ export default function WPPage() {
                     {r.is_ongoing && <span className="ml-1 text-[9px] text-orange-400">⚡</span>}
                   </td>
                 );
-                const prodCell = <td className="px-3 py-1.5 text-slate-200 whitespace-nowrap">{prod}</td>;
+                const prodCell = (
+                  <td className="px-3 py-1.5 whitespace-nowrap">
+                    <span className="font-mono text-slate-500 text-[9px] mr-1.5">{skuInfo?.sku_code ?? ""}</span>
+                    <span className="text-slate-200">{skuInfo?.l2_name ?? String(r.hierarchy_code)}</span>
+                  </td>
+                );
                 const chCell   = <td className="px-3 py-1.5 text-slate-400 whitespace-nowrap">{r.channel}</td>;
                 return (
                   <tr key={`${r.hierarchy_code}_${r.channel}_${r.current_week}`} className={baseClass}>
