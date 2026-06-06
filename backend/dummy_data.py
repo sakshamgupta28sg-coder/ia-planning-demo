@@ -4,14 +4,14 @@ from typing import Dict, List
 random.seed(42)
 
 HIERARCHIES = [
-    {"hierarchy_code": 10001, "l1_name": "Trees", "l2_name": "7.5ft Pre-Lit Slim Tree"},
-    {"hierarchy_code": 10002, "l1_name": "Trees", "l2_name": "9ft Grand Fir Tree"},
-    {"hierarchy_code": 10003, "l1_name": "Trees", "l2_name": "6ft Tabletop Tree"},
-    {"hierarchy_code": 10004, "l1_name": "Wreaths", "l2_name": "24in Classic Wreath"},
-    {"hierarchy_code": 10005, "l1_name": "Wreaths", "l2_name": "36in Grand Wreath"},
-    {"hierarchy_code": 10006, "l1_name": "Garlands", "l2_name": "9ft Garland"},
-    {"hierarchy_code": 10007, "l1_name": "Ornaments", "l2_name": "50-Piece Ornament Set"},
-    {"hierarchy_code": 10008, "l1_name": "Ornaments", "l2_name": "Personalized Ornament"},
+    {"hierarchy_code": 10001, "l1_name": "Footwear", "l2_name": "Running Shoes"},
+    {"hierarchy_code": 10002, "l1_name": "Footwear", "l2_name": "Casual Sneakers"},
+    {"hierarchy_code": 10003, "l1_name": "Footwear", "l2_name": "Ankle Boots"},
+    {"hierarchy_code": 10004, "l1_name": "Footwear", "l2_name": "Sandals"},
+    {"hierarchy_code": 10005, "l1_name": "Apparel", "l2_name": "Denim Jeans"},
+    {"hierarchy_code": 10006, "l1_name": "Apparel", "l2_name": "Graphic Tees"},
+    {"hierarchy_code": 10007, "l1_name": "Apparel", "l2_name": "Hoodies"},
+    {"hierarchy_code": 10008, "l1_name": "Apparel", "l2_name": "Activewear Shorts"},
 ]
 
 CHANNELS = ["Ecom", "Indirect", "Store"]
@@ -31,14 +31,14 @@ FISCAL_WEEKS = [int(f"2026{str(w).zfill(2)}") for w in range(1, 53)]
 
 # Base metrics per hierarchy (AIR = avg initial retail price, AUC = avg unit cost)
 HIERARCHY_METRICS = {
-    10001: {"air": 649.99, "auc": 195.0, "peak_week": 45, "peak_units": 480},
-    10002: {"air": 999.99, "auc": 290.0, "peak_week": 44, "peak_units": 320},
-    10003: {"air": 249.99, "auc": 75.0,  "peak_week": 46, "peak_units": 600},
-    10004: {"air": 89.99,  "auc": 27.0,  "peak_week": 46, "peak_units": 900},
-    10005: {"air": 149.99, "auc": 45.0,  "peak_week": 46, "peak_units": 500},
-    10006: {"air": 59.99,  "auc": 18.0,  "peak_week": 47, "peak_units": 1100},
-    10007: {"air": 39.99,  "auc": 12.0,  "peak_week": 47, "peak_units": 1400},
-    10008: {"air": 24.99,  "auc": 7.5,   "peak_week": 48, "peak_units": 800},
+    10001: {"air": 119.99, "auc": 44.0,  "peak_week": 14, "peak_units": 520},   # Running Shoes  – spring launch
+    10002: {"air": 89.99,  "auc": 30.0,  "peak_week": 25, "peak_units": 680},   # Casual Sneakers – summer
+    10003: {"air": 154.99, "auc": 55.0,  "peak_week": 41, "peak_units": 450},   # Ankle Boots    – fall
+    10004: {"air": 64.99,  "auc": 21.0,  "peak_week": 22, "peak_units": 750},   # Sandals        – summer
+    10005: {"air": 79.99,  "auc": 27.0,  "peak_week": 38, "peak_units": 900},   # Denim Jeans    – back-to-school
+    10006: {"air": 34.99,  "auc": 11.0,  "peak_week": 26, "peak_units": 1400},  # Graphic Tees   – summer
+    10007: {"air": 69.99,  "auc": 23.0,  "peak_week": 42, "peak_units": 800},   # Hoodies        – fall
+    10008: {"air": 44.99,  "auc": 14.0,  "peak_week": 24, "peak_units": 1100},  # Activewear Shorts – summer
 }
 
 CHANNEL_SPLIT = {"Ecom": 0.55, "Indirect": 0.30, "Store": 0.15}
