@@ -2,9 +2,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 from dummy_data import (
-    WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS,
+    WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, CURRENT_WEEK,
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
-    get_all_snapshots,
+    get_all_snapshots, apply_top_down,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -75,6 +75,7 @@ def get_wp_by_week(
                 "ly_units_var_perc":           0.0,
                 "ly_dollars_var_perc":         0.0,
                 "actualised":                  r.get("actualised", False),
+                "is_ongoing":                  r.get("is_ongoing", False),
                 "_modified":                   False,
             }
         w = weeks[wk]
@@ -208,6 +209,28 @@ def edit_row(body: EditRequest):
 def clear_overrides():
     reset_overrides()
     return {"reset": True}
+
+
+# ── Top-down distribution ─────────────────────────────────────────────────────
+class TopDownRequest(BaseModel):
+    hierarchy_codes: list
+    channels: list
+    target: float = Field(gt=0, description="Total target to distribute across planning weeks")
+    field: str = "written_sales_units"
+
+
+@router.post("/top-down")
+def top_down_distribute(body: TopDownRequest):
+    allowed = {"written_sales_units", "written_sales_dollars"}
+    if body.field not in allowed:
+        raise HTTPException(400, f"field must be one of {allowed}")
+    count = apply_top_down(
+        [int(hc) for hc in body.hierarchy_codes],
+        list(body.channels),
+        body.target,
+        body.field,
+    )
+    return {"applied": count, "current_week": CURRENT_WEEK}
 
 
 # ── Snapshots ─────────────────────────────────────────────────────────────────

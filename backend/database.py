@@ -148,3 +148,14 @@ def db_delete_snapshot(snap_id: int) -> bool:
         cur = conn.execute("DELETE FROM snapshots WHERE id = ?", (snap_id,))
         conn.commit()
     return cur.rowcount > 0
+
+
+def db_batch_upsert_overrides(updates: Dict[str, Dict]):
+    """Insert or replace multiple override entries in a single transaction (fast path)."""
+    with _conn() as conn:
+        for key, data in updates.items():
+            conn.execute(
+                "INSERT OR REPLACE INTO overrides (key, data) VALUES (?, ?)",
+                (key, json.dumps(data)),
+            )
+        conn.commit()

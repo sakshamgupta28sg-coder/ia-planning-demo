@@ -3,6 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import {
   fetchWPByWeek, fetchWPSummary, fetchWPFilters, fetchPortfolio,
   editWPRow, resetOverrides, fetchSnapshots, saveSnapshotAPI, restoreSnapshotAPI, deleteSnapshotAPI,
+  topDownDistribute,
 } from "@/lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -27,9 +28,14 @@ type WPRow = {
   ly_sales_units: number; ly_sales_dollars: number;
   ly_units_var: number; ly_dollars_var: number;
   ly_units_var_perc: number; ly_dollars_var_perc: number;
+  // LLY
+  lly_sales_units: number; lly_sales_dollars: number;
+  lly_units_var: number; lly_dollars_var: number;
+  lly_units_var_perc: number; lly_dollars_var_perc: number;
   // Markdown
   markdown_units: number; markdown_dollars: number;
   actualised: boolean;
+  is_ongoing: boolean;
   _modified?: boolean;
 };
 type PortfolioRow = {
@@ -122,13 +128,22 @@ function MultiSelect({
 
 // ── EditableNumber ────────────────────────────────────────────────────────────
 function EditableNumber({
-  value, onCommit, isModified, isInteger = true,
-}: { value: number; onCommit: (v: number) => void; isModified?: boolean; isInteger?: boolean }) {
+  value, onCommit, isModified, isInteger = true, locked = false,
+}: { value: number; onCommit: (v: number) => void; isModified?: boolean; isInteger?: boolean; locked?: boolean }) {
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const display = isInteger ? fmtU(value) : value.toFixed(2);
+
+  if (locked) {
+    return (
+      <span className="text-slate-600 select-none" title="Locked — actualised or ongoing week">
+        {display}
+        <span className="ml-0.5 text-[9px]">🔒</span>
+      </span>
+    );
+  }
 
   function startEdit() {
     setInputVal(String(isInteger ? Math.round(value) : value.toFixed(2)));
@@ -192,6 +207,10 @@ export default function WPPage() {
   const [resetting, setResetting] = useState(false);
   const [editError, setEditError] = useState("");
   const [activeTab, setActiveTab] = useState<"plan" | "actuals" | "inventory" | "ly">("plan");
+  const [planningOnly, setPlanningOnly] = useState(false);
+  const [topDownTarget, setTopDownTarget] = useState("");
+  const [topDownField, setTopDownField] = useState<"written_sales_units" | "written_sales_dollars">("written_sales_units");
+  const [topDownLoading, setTopDownLoading] = useState(false);
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
@@ -199,6 +218,11 @@ export default function WPPage() {
   // Stable string keys for useCallback dep arrays (avoids array identity issues)
   const hcsKey = [...selectedHcs].sort().join(",");
   const chsKey = [...selectedChannels].sort().join(",");
+
+  // Helper: is a row locked for editing (actualised or in-flight current week)
+  const isLocked = (r: WPRow) => r.actualised || r.is_ongoing;
+  // Rows visible in the weekly table (filtered when planningOnly is on)
+  const displayRows = planningOnly ? rows.filter((r) => !isLocked(r)) : rows;
 
   const reloadPortfolioAndSummary = useCallback(async () => {
     const [s, p] = await Promise.all([fetchWPSummary({}), fetchPortfolio()]);
@@ -282,6 +306,26 @@ export default function WPPage() {
     setSnapshots((prev) => prev.filter((s) => s.id !== id));
   }
 
+  async function handleTopDown() {
+    const target = parseFloat(topDownTarget);
+    if (isNaN(target) || target <= 0) return;
+    setTopDownLoading(true);
+    try {
+      await topDownDistribute({
+        hierarchy_codes: selectedHcs.map(Number),
+        channels: selectedChannels,
+        target,
+        field: topDownField,
+      });
+      await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
+      setTopDownTarget("");
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Top-down failed");
+    } finally {
+      setTopDownLoading(false);
+    }
+  }
+
   // Aggregate rows by week for the chart (multiple product×channel rows share the same week)
   const chartData = (() => {
     const byWeek = new Map<number, { week: string; "Sales U": number; BOP: number; EOP: number; Receipts: number }>();
@@ -349,6 +393,7 @@ export default function WPPage() {
     return "text-amber-400";
   }
   function rowExceptionBg(r: WPRow) {
+    if (r.is_ongoing) return "bg-orange-900/10";
     if (r.actualised && r.variance_units_perc !== null) {
       if (r.variance_units_perc > 0.15)  return "bg-red-900/20";    // actual badly below plan
       if (r.variance_units_perc < -0.1)  return "bg-emerald-900/15"; // actual above plan
@@ -583,6 +628,20 @@ export default function WPPage() {
             </span>
           )}
           <div className="flex-1" />
+          {/* Planning-only toggle */}
+          {canEdit && (
+            <button
+              onClick={() => setPlanningOnly((v) => !v)}
+              title="Hide actualised & in-flight weeks, show only editable planning weeks"
+              className={`text-xs px-3 py-1 rounded border transition-colors ${
+                planningOnly
+                  ? "bg-blue-800 border-blue-600 text-blue-200"
+                  : "bg-slate-800 border-slate-700 text-slate-400 hover:text-white"
+              }`}
+            >
+              📋 {planningOnly ? "Planning weeks" : "All weeks"}
+            </button>
+          )}
           {/* Tab buttons */}
           {canEdit && (
             <div className="flex gap-1">
@@ -596,7 +655,7 @@ export default function WPPage() {
                       : "bg-slate-700 text-slate-400 hover:text-white"
                   }`}
                 >
-                  {t === "ly" ? "TY/LY" : t.charAt(0).toUpperCase() + t.slice(1)}
+                  {t === "ly" ? "TY/LY/LLY" : t.charAt(0).toUpperCase() + t.slice(1)}
                 </button>
               ))}
             </div>
@@ -612,6 +671,37 @@ export default function WPPage() {
             </button>
           )}
         </div>
+
+        {/* Top-down distribution toolbar (plan tab only) */}
+        {canEdit && activeTab === "plan" && (
+          <div className="px-4 py-2 border-b border-slate-700 flex flex-wrap items-center gap-2 bg-slate-800/50">
+            <span className="text-xs text-slate-400 font-medium">↓ Top-down:</span>
+            <input
+              value={topDownTarget}
+              onChange={(e) => setTopDownTarget(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleTopDown()}
+              placeholder="Total target…"
+              className="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded px-2 py-1 w-32 outline-none focus:border-emerald-500"
+            />
+            <button
+              onClick={() => setTopDownField((f) => f === "written_sales_units" ? "written_sales_dollars" : "written_sales_units")}
+              className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-2.5 py-1 rounded border border-slate-600 transition-colors min-w-[52px]"
+              title="Toggle between units and dollars"
+            >
+              {topDownField === "written_sales_units" ? "Units" : "$"}
+            </button>
+            <button
+              onClick={handleTopDown}
+              disabled={!topDownTarget.trim() || topDownLoading}
+              className="text-xs bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors"
+            >
+              {topDownLoading ? "Applying…" : "Distribute"}
+            </button>
+            <span className="text-[10px] text-slate-600">
+              Distributes total across planning weeks · LY → LLY → plan weights
+            </span>
+          </div>
+        )}
 
         {!canEdit ? (
           <p className="text-xs text-slate-500 px-4 py-4">
@@ -655,22 +745,24 @@ export default function WPPage() {
                 {/* ── LY tab ── */}
                 {activeTab === "ly" && [
                   { l: "Week", left: true }, { l: "Product", left: true }, { l: "Channel", left: true },
-                  { l: "TY U" }, { l: "LY U" }, { l: "Var U" }, { l: "TY/LY U%" },
-                  { l: "TY $" }, { l: "LY $" }, { l: "Var $" }, { l: "TY/LY $%" },
+                  { l: "TY U" }, { l: "LY U" }, { l: "TY/LY U%" }, { l: "LLY U" }, { l: "TY/LLY U%" },
+                  { l: "TY $" }, { l: "LY $" }, { l: "TY/LY $%" }, { l: "LLY $" }, { l: "TY/LLY $%" },
                 ].map((h) => (
                   <th key={h.l} className={`px-3 py-2 font-medium whitespace-nowrap ${h.left ? "text-left" : "text-right"}`}>{h.l}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {displayRows.map((r) => {
                 const prod = filters.hierarchies.find((h) => h.hierarchy_code === r.hierarchy_code)?.l2_name ?? String(r.hierarchy_code);
                 const exBg = rowExceptionBg(r);
+                const locked = isLocked(r);
                 const baseClass = `transition-colors ${exBg || "hover:bg-slate-700/20"} border-b border-slate-700/50`;
                 const wk = (
                   <td className={`px-3 py-1.5 font-mono ${r._modified ? "text-amber-400" : "text-slate-400"}`}>
                     {r.current_week}{r._modified && <span className="ml-1 text-[9px]">✎</span>}
                     {r.actualised && <span className="ml-1 text-[9px] text-violet-400">●</span>}
+                    {r.is_ongoing && <span className="ml-1 text-[9px] text-orange-400">⚡</span>}
                   </td>
                 );
                 const prodCell = <td className="px-3 py-1.5 text-slate-200 whitespace-nowrap">{prod}</td>;
@@ -682,11 +774,11 @@ export default function WPPage() {
                     {/* ── PLAN ── */}
                     {activeTab === "plan" && <>
                       <td className="px-3 py-1.5 text-right">
-                        <EditableNumber value={r.written_sales_units} isModified={r._modified}
+                        <EditableNumber value={r.written_sales_units} isModified={r._modified} locked={locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "written_sales_units", v)} />
                       </td>
                       <td className="px-3 py-1.5 text-right">
-                        <EditableNumber value={r.written_sales_dollars} isModified={r._modified} isInteger={false}
+                        <EditableNumber value={r.written_sales_dollars} isModified={r._modified} isInteger={false} locked={locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "written_sales_dollars", v)} />
                       </td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{r.written_auc.toFixed(2)}</td>
@@ -694,7 +786,7 @@ export default function WPPage() {
                       <td className={`px-3 py-1.5 text-right ${r.written_gm_dollar >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtD(r.written_gm_dollar)}</td>
                       <td className={`px-3 py-1.5 text-right ${r.written_gm_perc >= 0.5 ? "text-emerald-400" : r.written_gm_perc >= 0.3 ? "text-slate-300" : "text-amber-400"}`}>{pct(r.written_gm_perc)}</td>
                       <td className="px-3 py-1.5 text-right">
-                        <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified}
+                        <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified} locked={locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "on_order_placed_total_unit", v)} />
                       </td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.bop_units)}</td>
@@ -734,7 +826,7 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right text-cyan-400">{fmtU(r.otb_units)}</td>
                       <td className="px-3 py-1.5 text-right text-cyan-400">{fmtD(r.otb_dollars)}</td>
                       <td className="px-3 py-1.5 text-right">
-                        <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified}
+                        <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified} locked={locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "on_order_placed_total_unit", v)} />
                       </td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{fmtU(r.on_order_unplaced_total_unit)}</td>
@@ -742,16 +834,20 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
                     </>}
 
-                    {/* ── LY ── */}
+                    {/* ── LY / LLY ── */}
                     {activeTab === "ly" && <>
+                      {/* Units block */}
                       <td className="px-3 py-1.5 text-right">{fmtU(r.written_sales_units)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{fmtU(r.ly_sales_units)}</td>
-                      <td className={`px-3 py-1.5 text-right ${lyVarColor(r.ly_units_var_perc)}`}>{fmtU(r.ly_units_var)}</td>
                       <td className={`px-3 py-1.5 text-right font-medium ${lyVarColor(r.ly_units_var_perc)}`}>{pct(r.ly_units_var_perc)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-600">{fmtU(r.lly_sales_units)}</td>
+                      <td className={`px-3 py-1.5 text-right font-medium ${lyVarColor(r.lly_units_var_perc)}`}>{pct(r.lly_units_var_perc)}</td>
+                      {/* Dollar block */}
                       <td className="px-3 py-1.5 text-right">{fmtD(r.written_sales_dollars)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{fmtD(r.ly_sales_dollars)}</td>
-                      <td className={`px-3 py-1.5 text-right ${lyVarColor(r.ly_dollars_var_perc)}`}>{fmtD(r.ly_dollars_var)}</td>
                       <td className={`px-3 py-1.5 text-right font-medium ${lyVarColor(r.ly_dollars_var_perc)}`}>{pct(r.ly_dollars_var_perc)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-600">{fmtD(r.lly_sales_dollars)}</td>
+                      <td className={`px-3 py-1.5 text-right font-medium ${lyVarColor(r.lly_dollars_var_perc)}`}>{pct(r.lly_dollars_var_perc)}</td>
                     </>}
                   </tr>
                 );
@@ -762,11 +858,13 @@ export default function WPPage() {
 
         {/* Legend */}
         {canEdit && rows.length > 0 && (
-          <div className="px-4 py-2 border-t border-slate-700 flex gap-4 text-[10px] text-slate-500">
-            <span><span className="inline-block w-2 h-2 rounded-full bg-violet-400 mr-1" />● past (actuals available)</span>
+          <div className="px-4 py-2 border-t border-slate-700 flex flex-wrap gap-4 text-[10px] text-slate-500">
+            <span><span className="inline-block w-2 h-2 rounded-full bg-violet-400 mr-1" />● past week (actuals available, locked)</span>
+            <span>⚡ ongoing week (in-flight, locked)</span>
             <span><span className="inline-block w-2 h-2 rounded-full bg-red-600 mr-1" />red row = below plan &gt;15% or WOS&lt;2</span>
             <span><span className="inline-block w-2 h-2 rounded-full bg-amber-600 mr-1" />amber row = WOS&gt;14</span>
             <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-700 mr-1" />green row = tracking above plan</span>
+            <span>🔒 = cell cannot be edited</span>
           </div>
         )}
       </div>

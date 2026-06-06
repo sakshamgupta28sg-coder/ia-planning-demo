@@ -106,3 +106,18 @@ export async function deleteSKU(hierarchy_code: number) {
   const res = await fetch(`${BASE}/skus/${hierarchy_code}`, { method: "DELETE" });
   return res.json();
 }
+
+export async function topDownDistribute(body: {
+  hierarchy_codes: number[];
+  channels: string[];
+  target: number;
+  field: string;
+}) {
+  const res = await fetch(`${BASE}/wp/top-down`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

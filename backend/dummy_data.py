@@ -43,6 +43,9 @@ HIERARCHY_METRICS = {
 
 CHANNEL_SPLIT = {"Ecom": 0.55, "Indirect": 0.30, "Store": 0.15}
 
+# The fiscal week that is currently in-flight (not yet actualised, but not open for editing)
+CURRENT_WEEK = 202520
+
 
 def _seasonal_curve(week_num: int, peak_week: int) -> float:
     dist = abs(week_num - peak_week)
@@ -130,6 +133,7 @@ def generate_wp_data() -> List[Dict]:
                     "total_receipt_units": receipt_units,
                     "recomm_receipt_units": max(0, round(units * 1.05 - current_bop * 0.3)),
                     "actualised": is_past,
+                    "is_ongoing": (wk == CURRENT_WEEK),
                     "actual_sales_units":   actual_units,
                     "actual_sales_dollars": actual_dollars,
                     "actual_sales_cost":    actual_cost,
@@ -150,19 +154,24 @@ def generate_ty_ly_data() -> List[Dict]:
                 curve = _seasonal_curve(week_num, m["peak_week"])
                 ty_units = round(m["peak_units"] * CHANNEL_SPLIT[ch] * curve * random.uniform(0.9, 1.1))
                 ly_units = round(ty_units * random.uniform(0.85, 1.15))
+                lly_units = round(ly_units * random.uniform(0.82, 1.12))
                 ty_dollars = round(ty_units * m["air"] * (1 - _dr_perc(week_num, m["peak_week"])), 2)
                 ly_dollars = round(ly_units * m["air"] * (1 - _dr_perc(week_num, m["peak_week"])), 2)
+                lly_dollars = round(lly_units * m["air"] * (1 - _dr_perc(week_num, m["peak_week"])), 2)
                 rows.append({
                     "hierarchy_code": hc,
                     "l1_name": h["l1_name"],
                     "l2_name": h["l2_name"],
                     "channel": ch,
                     "current_week": wk,
-                    "compared_week": int(str(wk).replace("2025", "2024")),
+                    "compared_week":     int(str(wk).replace("2025", "2024")),
+                    "compared_week_lly": int(str(wk).replace("2025", "2023")),
                     "ty_units": ty_units,
                     "ly_units": ly_units,
+                    "lly_units": lly_units,
                     "ty_dollars": ty_dollars,
                     "ly_dollars": ly_dollars,
+                    "lly_dollars": lly_dollars,
                     "units_var": ty_units - ly_units,
                     "units_var_perc": round((ty_units - ly_units) / ly_units if ly_units else 0, 4),
                     "dollars_var": round(ty_dollars - ly_dollars, 2),
@@ -240,6 +249,7 @@ from datetime import datetime
 from database import (
     init_db,
     db_get_overrides, db_upsert_override, db_clear_overrides, db_replace_overrides,
+    db_batch_upsert_overrides,
     db_list_snapshots, db_get_snapshot, db_insert_snapshot, db_delete_snapshot,
 )
 
@@ -337,6 +347,7 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
                 "on_order_placed_total_unit":   0,
                 "on_order_unplaced_total_unit": 0,
                 "actualised":  r["actualised"],
+                "is_ongoing":  r.get("is_ongoing", False),
                 "actual_sales_units":   0,
                 "actual_sales_dollars": 0.0,
                 "actual_sales_cost":    0.0,
@@ -363,8 +374,9 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         b["markdown_units"]              += r["markdown_units"]
         b["markdown_dollars"]             = round(b["markdown_dollars"]     + r["markdown_dollars"], 2)
 
-    # ── LY lookup (keyed same way as buckets) ────────────────────────────────────
+    # ── LY / LLY lookups (keyed same way as buckets) ─────────────────────────────
     _ly: Dict[str, Dict] = {}
+    _lly: Dict[str, Dict] = {}
     for r in TY_LY_DATA:
         if hc_filter and r["hierarchy_code"] != hc_filter:
             continue
@@ -372,9 +384,12 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
             continue
         k = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
         if k not in _ly:
-            _ly[k] = {"ly_units": 0, "ly_dollars": 0.0}
-        _ly[k]["ly_units"]   += r["ly_units"]
-        _ly[k]["ly_dollars"]  = round(_ly[k]["ly_dollars"] + r["ly_dollars"], 2)
+            _ly[k]  = {"ly_units": 0,  "ly_dollars":  0.0}
+            _lly[k] = {"lly_units": 0, "lly_dollars": 0.0}
+        _ly[k]["ly_units"]    += r["ly_units"]
+        _ly[k]["ly_dollars"]   = round(_ly[k]["ly_dollars"]  + r["ly_dollars"],  2)
+        _lly[k]["lly_units"]  += r.get("lly_units", 0)
+        _lly[k]["lly_dollars"] = round(_lly[k]["lly_dollars"] + r.get("lly_dollars", 0.0), 2)
 
     for key, b in buckets.items():
         # AUR / GM%
@@ -412,6 +427,15 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         b["ly_dollars_var"]      = round(b["written_sales_dollars"] - ly["ly_dollars"], 2)
         b["ly_units_var_perc"]   = round(b["ly_units_var"]   / ly["ly_units"],   4) if ly["ly_units"]   > 0 else 0.0
         b["ly_dollars_var_perc"] = round(b["ly_dollars_var"] / ly["ly_dollars"], 4) if ly["ly_dollars"] > 0 else 0.0
+
+        # LLY (last-to-last year)
+        lly = _lly.get(key, {"lly_units": 0, "lly_dollars": 0.0})
+        b["lly_sales_units"]      = lly["lly_units"]
+        b["lly_sales_dollars"]    = lly["lly_dollars"]
+        b["lly_units_var"]        = b["written_sales_units"] - lly["lly_units"]
+        b["lly_dollars_var"]      = round(b["written_sales_dollars"] - lly["lly_dollars"], 2)
+        b["lly_units_var_perc"]   = round(b["lly_units_var"]   / lly["lly_units"],   4) if lly["lly_units"]   > 0 else 0.0
+        b["lly_dollars_var_perc"] = round(b["lly_dollars_var"] / lly["lly_dollars"], 4) if lly["lly_dollars"] > 0 else 0.0
 
     for key, ovr in db_get_overrides().items():
         if key in buckets:
@@ -475,3 +499,78 @@ def save_snapshot(name: str) -> Dict:
 
 def get_all_snapshots() -> List[Dict]:
     return db_list_snapshots()
+
+
+def apply_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> int:
+    """
+    Distribute `target` across all planning weeks (not actualised, not ongoing)
+    for the given HCs × channels.
+
+    Weight basis (per week/hc/channel cell):
+      1st priority – LY value for that cell
+      2nd priority – LLY value (if LY == 0)
+      3rd priority – current plan value (if LY == 0 AND LLY == 0)
+
+    Returns the number of rows updated.
+    """
+    ly_field  = "ly_units"  if field == "written_sales_units" else "ly_dollars"
+    lly_field = "lly_units" if field == "written_sales_units" else "lly_dollars"
+
+    # Build LY / LLY weight maps from TY_LY_DATA
+    ly_map:  Dict[str, float] = {}
+    lly_map: Dict[str, float] = {}
+    for r in TY_LY_DATA:
+        if r["hierarchy_code"] not in hcs:
+            continue
+        if r["channel"] not in channels:
+            continue
+        k = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+        ly_map[k]  = float(r.get(ly_field,  0) or 0)
+        lly_map[k] = float(r.get(lly_field, 0) or 0)
+
+    # Collect planning rows (not actualised, not the ongoing/current week)
+    planning_rows: List[Dict] = []
+    for hc in hcs:
+        for ch in channels:
+            for r in get_agg_rows(hc, ch):
+                if not r["actualised"] and not r.get("is_ongoing", False):
+                    planning_rows.append(r)
+
+    if not planning_rows:
+        return 0
+
+    # Compute weights using LY → LLY → current plan fallback
+    weights: List[float] = []
+    for r in planning_rows:
+        k = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+        w = ly_map.get(k, 0.0)
+        if w <= 0:
+            w = lly_map.get(k, 0.0)
+        if w <= 0:
+            w = float(r.get(field, 0) or 0)
+        weights.append(w)
+
+    total_w = sum(weights)
+    if total_w <= 0:
+        return 0
+
+    # Compute new values proportionally
+    all_overrides = db_get_overrides()
+    updates: Dict[str, Dict] = {}
+    for r, w in zip(planning_rows, weights):
+        new_val = (w / total_w) * target
+        # Round same as apply_edit (OBS-02)
+        if field in ("written_sales_units", "on_order_placed_total_unit"):
+            new_val = float(round(new_val))
+        else:
+            new_val = round(new_val, 2)
+
+        key = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+        entry = dict(all_overrides.get(key, {}))
+        entry[field] = new_val
+        entry["_last_edited"] = field
+        updates[key] = entry
+
+    # One DB transaction for all writes
+    db_batch_upsert_overrides(updates)
+    return len(planning_rows)
