@@ -1,3 +1,6 @@
+# Database (live plan data — do not commit)
+backend/planning.db
+
 # Python
 __pycache__/
 *.py[cod]
