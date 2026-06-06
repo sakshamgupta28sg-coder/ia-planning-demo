@@ -455,15 +455,6 @@ export default function WPPage() {
     if (st > 0.4) return "text-slate-300";
     return "text-amber-400";
   }
-  function rowExceptionBg(r: WPRow) {
-    if (r.is_ongoing) return "bg-orange-900/10";
-    if (r.actualised) {
-      if ((r.variance_units_perc ?? 0) > 0.15) return "bg-red-900/20";
-      if ((r.variance_units_perc ?? 0) < -0.1)  return "bg-emerald-900/15";
-    }
-    // Week-group stripe — all rows in the same week share one shade
-    return r.current_week % 2 === 0 ? "bg-slate-700/20" : "";
-  }
 
   // ── CSV export ────────────────────────────────────────────────────────────────
   function exportCSV() {
@@ -882,22 +873,8 @@ export default function WPPage() {
             Select at least 1 product and 1 channel above to view and edit weekly values.
           </p>
         ) : (() => {
-          // Pre-compute one bg color per week so every row in the same week looks identical
+          // No row shading — plain rows, signal via text/cell colors only
           const weekBgMap = new Map<number, string>();
-          for (const r of displayRows) {
-            if (weekBgMap.has(r.current_week)) continue;
-            if (r.is_ongoing) { weekBgMap.set(r.current_week, "bg-orange-900/10"); continue; }
-            if (r.actualised) {
-              // Check worst variance across all rows in this week
-              const weekRows = displayRows.filter((x) => x.current_week === r.current_week);
-              const maxVar = Math.max(...weekRows.map((x) => x.variance_units_perc ?? 0));
-              const minVar = Math.min(...weekRows.map((x) => x.variance_units_perc ?? 0));
-              if (maxVar > 0.15)       { weekBgMap.set(r.current_week, "bg-red-900/20");      continue; }
-              if (minVar < -0.1)       { weekBgMap.set(r.current_week, "bg-emerald-900/15");  continue; }
-            }
-            // Alternating stripe for all other weeks
-            weekBgMap.set(r.current_week, r.current_week % 2 === 0 ? "bg-slate-700/15" : "");
-          }
 
           return (
           <table className="w-full text-xs text-slate-300">
@@ -1059,9 +1036,7 @@ export default function WPPage() {
           <div className="px-4 py-2 border-t border-slate-700 flex flex-wrap gap-4 text-[10px] text-slate-500">
             <span><span className="inline-block w-2 h-2 rounded-full bg-violet-400 mr-1" />● past week (actuals available, locked)</span>
             <span>⚡ ongoing week (in-flight, locked)</span>
-            <span><span className="inline-block w-2 h-2 rounded-full bg-red-600 mr-1" />red row = actuals below plan &gt;15%</span>
-            <span><span className="inline-block w-2 h-2 rounded-full bg-emerald-700 mr-1" />green row = actuals above plan</span>
-            <span>WOS color in column: <span className="text-red-400">red</span> &lt;2 · <span className="text-amber-400">amber</span> &gt;14 · <span className="text-emerald-400">green</span> healthy</span>
+            <span>WOS: <span className="text-red-400">red</span> &lt;2 · <span className="text-amber-400">amber</span> &gt;14 · <span className="text-emerald-400">green</span> healthy</span>
             <span>🔒 = cell cannot be edited</span>
           </div>
         )}
