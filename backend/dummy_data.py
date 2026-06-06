@@ -1,3 +1,4 @@
+import math as _math
 import random
 from typing import Dict, List
 
@@ -33,15 +34,28 @@ WAREHOUSE_SUB_CHANNELS = {
 FISCAL_WEEKS = [int(f"2026{str(w).zfill(2)}") for w in range(1, 53)]
 
 # Base metrics per hierarchy (AIR = avg initial retail price, AUC = avg unit cost)
+# OTB fields:
+#   target_wos     – target weeks-of-supply to hold at EOP
+#   lead_time_weeks – total inbound lead time from PO placement to receipt
+#   case_pack       – minimum order quantity (round-up denominator)
+#   safety_weeks    – additional buffer added to look-ahead window
 HIERARCHY_METRICS = {
-    10001: {"air": 119.99, "auc": 44.0,  "peak_week": 14, "peak_units": 520},   # Running Shoes  – spring launch
-    10002: {"air": 89.99,  "auc": 30.0,  "peak_week": 25, "peak_units": 680},   # Casual Sneakers – summer
-    10003: {"air": 154.99, "auc": 55.0,  "peak_week": 41, "peak_units": 450},   # Ankle Boots    – fall
-    10004: {"air": 64.99,  "auc": 21.0,  "peak_week": 22, "peak_units": 750},   # Sandals        – summer
-    10005: {"air": 79.99,  "auc": 27.0,  "peak_week": 38, "peak_units": 900},   # Denim Jeans    – back-to-school
-    10006: {"air": 34.99,  "auc": 11.0,  "peak_week": 26, "peak_units": 1400},  # Graphic Tees   – summer
-    10007: {"air": 69.99,  "auc": 23.0,  "peak_week": 42, "peak_units": 800},   # Hoodies        – fall
-    10008: {"air": 44.99,  "auc": 14.0,  "peak_week": 24, "peak_units": 1100},  # Activewear Shorts – summer
+    10001: {"air": 119.99, "auc": 44.0,  "peak_week": 14, "peak_units":  520,  # Running Shoes  – spring launch
+            "target_wos": 6, "lead_time_weeks": 14, "case_pack":  6, "safety_weeks": 2},
+    10002: {"air":  89.99, "auc": 30.0,  "peak_week": 25, "peak_units":  680,  # Casual Sneakers – summer
+            "target_wos": 6, "lead_time_weeks": 12, "case_pack":  6, "safety_weeks": 2},
+    10003: {"air": 154.99, "auc": 55.0,  "peak_week": 41, "peak_units":  450,  # Ankle Boots    – fall
+            "target_wos": 8, "lead_time_weeks": 16, "case_pack":  4, "safety_weeks": 3},
+    10004: {"air":  64.99, "auc": 21.0,  "peak_week": 22, "peak_units":  750,  # Sandals        – summer
+            "target_wos": 5, "lead_time_weeks": 10, "case_pack": 12, "safety_weeks": 1},
+    10005: {"air":  79.99, "auc": 27.0,  "peak_week": 38, "peak_units":  900,  # Denim Jeans    – back-to-school
+            "target_wos": 8, "lead_time_weeks": 14, "case_pack": 12, "safety_weeks": 2},
+    10006: {"air":  34.99, "auc": 11.0,  "peak_week": 26, "peak_units": 1400,  # Graphic Tees   – summer
+            "target_wos": 6, "lead_time_weeks": 10, "case_pack": 24, "safety_weeks": 2},
+    10007: {"air":  69.99, "auc": 23.0,  "peak_week": 42, "peak_units":  800,  # Hoodies        – fall
+            "target_wos": 8, "lead_time_weeks": 12, "case_pack": 12, "safety_weeks": 3},
+    10008: {"air":  44.99, "auc": 14.0,  "peak_week": 24, "peak_units": 1100,  # Activewear Shorts – summer
+            "target_wos": 5, "lead_time_weeks": 10, "case_pack": 24, "safety_weeks": 1},
 }
 
 CHANNEL_SPLIT = {"Ecom": 0.55, "Indirect": 0.30, "Store": 0.15}
@@ -73,8 +87,39 @@ def _dr_perc(week_num: int, peak_week: int) -> float:
     return round(random.uniform(0.25, 0.40), 4)
 
 
+# Populated by generate_wp_data(); keyed (hc, ch, wk) → sum of planned units
+# over the look-ahead window [wk+1 … wk+lead_time_weeks+safety_weeks].
+_FORWARD_DEMAND_INDEX: Dict[tuple, int] = {}
+
+
+def _compute_recomm_receipt(hc: int, ch: str, wk: int, bop_units: int, oo_placed: int) -> int:
+    """Rolling OTB Forward Coverage model.
+
+    receipt_needed = forward_demand          # sum of planned sales over look-ahead
+                   + target_eop              # = avg_weekly_demand × target_wos
+                   - bop_units              # inventory already on hand
+                   - oo_placed              # on-order already committed
+
+    Rounded *up* to nearest case-pack; floored at 0.
+    """
+    m = HIERARCHY_METRICS[hc]
+    look_ahead = m["lead_time_weeks"] + m["safety_weeks"]
+    if look_ahead <= 0:
+        return 0
+    fwd_demand = _FORWARD_DEMAND_INDEX.get((hc, ch, wk), 0)
+    weekly_avg = fwd_demand / look_ahead
+    target_eop = round(weekly_avg * m["target_wos"])
+    raw = max(0, fwd_demand + target_eop - bop_units - oo_placed)
+    cp = m["case_pack"]
+    return int(_math.ceil(raw / cp) * cp) if (raw > 0 and cp > 0) else 0
+
+
 def generate_wp_data() -> List[Dict]:
-    rows = []
+    global _FORWARD_DEMAND_INDEX
+    rows: List[Dict] = []
+    demand_index: Dict[tuple, int] = {}  # (hc, ch, wk) → planned sales units
+
+    # ── Pass 1: generate rows + collect demand per cell ───────────────────────
     for h in HIERARCHIES:
         hc = h["hierarchy_code"]
         m = HIERARCHY_METRICS[hc]
@@ -93,7 +138,6 @@ def generate_wp_data() -> List[Dict]:
                 gm_dollar = round(sales_dollars - sales_cost, 2)
                 gm_perc = round((gm_dollar / sales_dollars) if sales_dollars else 0, 4)
 
-                # inventory
                 current_bop = round(bop[ch])
                 receipt_units = round(units * 1.1 * random.uniform(0.8, 1.2))
                 eop = max(0, current_bop - units + receipt_units)
@@ -102,15 +146,14 @@ def generate_wp_data() -> List[Dict]:
                 oo_placed = round(receipt_units * 0.6)
                 oo_unplaced = round(receipt_units * 0.4)
 
-                # Actuals for past weeks (202501–202519); 0 for future weeks
                 is_past = week_num < 20
                 actual_units   = round(units * random.uniform(0.78, 1.08)) if is_past else 0
                 actual_dollars = round(actual_units * aur, 2)
                 actual_cost    = round(actual_units * m["auc"], 2)
-                # Markdown: units sold at a promotional price
                 md_units   = round(units * dr)
                 md_dollars = round(md_units * m["air"] * dr, 2)
 
+                demand_index[(hc, ch, wk)] = units
                 rows.append({
                     "hierarchy_code": hc,
                     "l1_name": h["l1_name"],
@@ -134,7 +177,7 @@ def generate_wp_data() -> List[Dict]:
                     "on_order_placed_total_unit": oo_placed,
                     "on_order_unplaced_total_unit": oo_unplaced,
                     "total_receipt_units": receipt_units,
-                    "recomm_receipt_units": max(0, round(units * 1.05 - current_bop * 0.3)),
+                    "recomm_receipt_units": 0,   # filled in pass 2
                     "actualised": is_past,
                     "is_ongoing": (wk == CURRENT_WEEK),
                     "actual_sales_units":   actual_units,
@@ -143,6 +186,24 @@ def generate_wp_data() -> List[Dict]:
                     "markdown_units":       md_units,
                     "markdown_dollars":     md_dollars,
                 })
+
+    # ── Build forward demand index (look-ahead window per SKU × channel × week) ─
+    wk_pos = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
+    _FORWARD_DEMAND_INDEX = {}
+    for (hc, ch, wk) in demand_index:
+        m = HIERARCHY_METRICS[hc]
+        look_ahead = m["lead_time_weeks"] + m["safety_weeks"]
+        idx = wk_pos[wk]
+        future_wks = FISCAL_WEEKS[idx + 1 : idx + 1 + look_ahead]
+        _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(demand_index.get((hc, ch, fw), 0) for fw in future_wks)
+
+    # ── Pass 2: backfill recomm_receipt_units (Rolling OTB Forward Coverage) ──
+    for r in rows:
+        r["recomm_receipt_units"] = _compute_recomm_receipt(
+            r["hierarchy_code"], r["channel"], r["current_week"],
+            r["bop_units"], r["on_order_placed_total_unit"],
+        )
+
     return rows
 
 
@@ -300,7 +361,10 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     row["written_gm_dollar"]  = round(row["written_sales_dollars"] - row["written_sales_cost"], 2)
     if row["written_sales_dollars"] > 0:
         row["written_gm_perc"] = round(row["written_gm_dollar"] / row["written_sales_dollars"], 4)
-    row["recomm_receipt_units"] = max(0, round(units * 1.05 - row["bop_units"] * 0.3))
+    row["recomm_receipt_units"] = _compute_recomm_receipt(
+        row["hierarchy_code"], row["channel"], row["current_week"],
+        row["bop_units"], row["on_order_placed_total_unit"],
+    )
     # Re-derive analytics fields after override
     row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
     avail = row["bop_units"] + row["total_receipt_units"]
