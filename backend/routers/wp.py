@@ -2,8 +2,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 from dummy_data import (
-    WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, SNAPSHOTS,
+    WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS,
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
+    get_all_snapshots,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -216,7 +217,7 @@ class SnapshotRequest(BaseModel):
 
 @router.get("/snapshots")
 def list_snapshots():
-    return SNAPSHOTS
+    return get_all_snapshots()
 
 
 @router.post("/snapshots")

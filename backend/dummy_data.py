@@ -237,10 +237,13 @@ SCENARIO_DATA = generate_scenario_data()
 
 # ── Override / Snapshot layer ──────────────────────────────────────────────────
 from datetime import datetime
+from database import (
+    init_db,
+    db_get_overrides, db_upsert_override, db_clear_overrides, db_replace_overrides,
+    db_list_snapshots, db_get_snapshot, db_insert_snapshot, db_delete_snapshot,
+)
 
-OVERRIDES: Dict[str, Dict] = {}   # key: f"{hc}_{wk}_{ch}" → {field: value}
-SNAPSHOTS: List[Dict] = []
-_NEXT_SNAPSHOT_ID: int = 0        # monotonic counter — never reuses IDs after deletes (P-04)
+init_db()  # create tables on first import; no-op if already exist
 
 
 def _ovr_key(hc: int, wk: int, ch: str) -> str:
@@ -410,7 +413,7 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         b["ly_units_var_perc"]   = round(b["ly_units_var"]   / ly["ly_units"],   4) if ly["ly_units"]   > 0 else 0.0
         b["ly_dollars_var_perc"] = round(b["ly_dollars_var"] / ly["ly_dollars"], 4) if ly["ly_dollars"] > 0 else 0.0
 
-    for key, ovr in OVERRIDES.items():
+    for key, ovr in db_get_overrides().items():
         if key in buckets:
             buckets[key] = _recalc(buckets[key], ovr)
 
@@ -419,58 +422,56 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
 
 def apply_edit(hc: int, wk: int, ch: str, field: str, value: float) -> Dict:
     key = _ovr_key(hc, wk, ch)
-    if key not in OVERRIDES:
-        OVERRIDES[key] = {}
+    overrides = db_get_overrides()
+    entry = overrides.get(key, {})
     # Round unit fields to integers, dollar fields to 2 dp (OBS-02)
     if field in ("written_sales_units", "on_order_placed_total_unit"):
         value = float(round(value))
     else:
         value = round(value, 2)
-    OVERRIDES[key][field] = value
-    OVERRIDES[key]["_last_edited"] = field   # track which field was most recently changed
+    entry[field] = value
+    entry["_last_edited"] = field   # track which field was most recently changed
+    db_upsert_override(key, entry)
     rows = get_agg_rows(hc, ch)
     return next((r for r in rows if r["current_week"] == wk), None)
 
 
 def reset_overrides():
-    OVERRIDES.clear()
+    db_clear_overrides()
 
 
 def restore_snapshot(snap_id: int) -> bool:
-    snap = next((s for s in SNAPSHOTS if s["id"] == snap_id), None)
+    snap = db_get_snapshot(snap_id)
     if not snap:
         return False
-    OVERRIDES.clear()
-    OVERRIDES.update({k: dict(v) for k, v in snap["overrides"].items()})
+    db_replace_overrides(snap["overrides"])
     return True
 
 
 def delete_snapshot(snap_id: int) -> bool:
-    global SNAPSHOTS
-    before = len(SNAPSHOTS)
-    SNAPSHOTS = [s for s in SNAPSHOTS if s["id"] != snap_id]
-    return len(SNAPSHOTS) < before
+    return db_delete_snapshot(snap_id)
 
 
 def save_snapshot(name: str) -> Dict:
-    global _NEXT_SNAPSHOT_ID
     all_rows = get_agg_rows()
+    overrides = db_get_overrides()
     td = round(sum(r["written_sales_dollars"] for r in all_rows), 2)
     tg = round(sum(r["written_gm_dollar"] for r in all_rows), 2)
-    _NEXT_SNAPSHOT_ID += 1
-    snap = {
-        "id":              _NEXT_SNAPSHOT_ID,   # monotonic — no collision after deletes (P-04)
-        "name":            name,
-        "created_at":      datetime.now().isoformat(),
-        "overrides_count": len(OVERRIDES),
-        "overrides":       {k: dict(v) for k, v in OVERRIDES.items()},
-        "summary": {
-            "total_sales_units":   sum(r["written_sales_units"] for r in all_rows),
-            "total_sales_dollars": td,
-            "total_gm_dollar":     tg,
-            # Dollar-weighted GM% — not simple average (P-03)
-            "avg_gm_perc":         round(tg / td, 4) if td > 0 else 0,
-        },
+    summary = {
+        "total_sales_units":   sum(r["written_sales_units"] for r in all_rows),
+        "total_sales_dollars": td,
+        "total_gm_dollar":     tg,
+        # Dollar-weighted GM% — not simple average (P-03)
+        "avg_gm_perc":         round(tg / td, 4) if td > 0 else 0,
     }
-    SNAPSHOTS.append(snap)
-    return snap
+    return db_insert_snapshot(
+        name=name,
+        created_at=datetime.now().isoformat(),
+        overrides_count=len(overrides),
+        overrides={k: dict(v) for k, v in overrides.items()},
+        summary=summary,
+    )
+
+
+def get_all_snapshots() -> List[Dict]:
+    return db_list_snapshots()
