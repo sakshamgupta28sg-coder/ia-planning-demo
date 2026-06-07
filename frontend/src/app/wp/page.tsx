@@ -25,6 +25,7 @@ type WPRow = {
   variance_units: number | null; variance_dollars: number | null; variance_units_perc: number | null;
   // Inventory analytics
   sell_through_perc: number; wos: number | null;
+  fwd_coverage_wks: number | null; lead_time_weeks: number;
   otb_units: number; otb_dollars: number;
   // LY
   ly_sales_units: number; ly_sales_dollars: number;
@@ -518,13 +519,15 @@ export default function WPPage() {
     if (v < -0.05) return "text-red-400";     // TY below LY
     return "text-slate-300";
   }
-  function wosColor(w: number | null) {
+  function wosColor(w: number | null, fc: number | null, leadTime: number) {
     if (w === null || w === undefined) return "text-slate-500";
-    if (w < 2)  return "text-red-400 font-semibold";
-    if (w < 4)  return "text-amber-400";
-    if (w > 16) return "text-red-400";
-    if (w > 12) return "text-amber-400";
-    return "text-emerald-400";
+    // Use forward coverage (EOP + in-transit pipeline) when available; fall back to WOS
+    const cov = fc ?? w;
+    if (cov < leadTime * 0.5)  return "text-red-400 font-semibold";  // critical stock-out risk
+    if (cov < leadTime)        return "text-amber-400";               // ordering needed
+    if (cov > leadTime * 3)    return "text-red-400";                 // deep excess
+    if (cov > leadTime * 2)    return "text-amber-400";               // excess
+    return "text-emerald-400";                                        // healthy
   }
   function stColor(st: number) {
     if (st > 0.6) return "text-emerald-400";
@@ -1161,7 +1164,10 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right">{fmtU(r.bop_units)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-400" title="Total receipts inbound this week">{fmtU(r.total_receipt_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
-                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos)}`}>{r.wos ?? "—"}</td>
+                      <td
+                        className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}
+                        title={r.fwd_coverage_wks != null ? `Fwd Coverage: ${r.fwd_coverage_wks.toFixed(1)} wks (incl. OO pipeline)` : undefined}
+                      >{r.wos ?? "—"}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
                     </>}
 
@@ -1192,7 +1198,10 @@ export default function WPPage() {
                     {activeTab === "inventory" && <>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.bop_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
-                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos)}`}>{r.wos ?? "—"}</td>
+                      <td
+                        className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}
+                        title={r.fwd_coverage_wks != null ? `Fwd Coverage: ${r.fwd_coverage_wks.toFixed(1)} wks (incl. OO pipeline)` : undefined}
+                      >{r.wos ?? "—"}</td>
                       <td className="px-3 py-1.5 text-right text-cyan-400">{fmtU(r.otb_units)}</td>
                       <td className="px-3 py-1.5 text-right text-cyan-400">{fmtD(r.otb_dollars)}</td>
                       <td className="px-3 py-1.5 text-right">

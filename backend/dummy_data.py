@@ -227,6 +227,8 @@ def generate_wp_data() -> List[Dict]:
                     "on_order_placed_total_unit": receipt_units,
                     "total_receipt_units":    receipt_units,
                     "recomm_receipt_units":   0,   # filled in Pass 3
+                    "lead_time_weeks":        m["lead_time_weeks"],
+                    "fwd_coverage_wks":       None,  # filled in get_agg_rows
                     "actualised":   is_past,
                     "is_ongoing":   is_ongoing,
                     "actual_sales_units":   actual_units,
@@ -594,14 +596,20 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
         row["recomm_receipt_units"] = 0
 
     # ── WOS — 8-week forward avg for planning; null for actualized ────────────
+    _eff_m = get_effective_metrics(row["hierarchy_code"])
+    row["lead_time_weeks"] = _eff_m["lead_time_weeks"]
     if row.get("actualised"):
         row["wos"] = None
+        row["fwd_coverage_wks"] = None
     elif row.get("is_ongoing"):
         row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
+        row["fwd_coverage_wks"] = None
     else:
         _wos_fwd = _WOS_DEMAND_INDEX.get((row["hierarchy_code"], row["channel"], row["current_week"]), 0)
         _wos_avg = _wos_fwd / WOS_WINDOW if WOS_WINDOW > 0 else 0
         row["wos"] = round(row["eop_units"] / _wos_avg, 2) if _wos_avg > 0 else 99.0
+        # fwd_coverage not computable in single-row context (no pipeline access) — stream walk handles it
+        row.setdefault("fwd_coverage_wks", None)
     avail = row["bop_units"] + row["total_receipt_units"]
     row["sell_through_perc"] = round(row["actual_sales_units"] / avail, 4) if avail > 0 and row.get("actualised") else 0.0
     row["otb_units"]   = 0
@@ -758,15 +766,18 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         prev_eop = None
         actual_window: List[int] = []   # rolling 4-week actual sales for trailing WOS
         m_s = get_effective_metrics(hc_s)
-        look_ahead_s = m_s["lead_time_weeks"] + m_s["safety_weeks"]
+        lead_time_s   = m_s["lead_time_weeks"]
+        look_ahead_s  = lead_time_s + m_s["safety_weeks"]
 
-        for b in stream:
+        for i, b in enumerate(stream):
+            b["lead_time_weeks"] = lead_time_s   # expose on every row for frontend coloring
+
             if b.get("actualised"):
-                # Historical: WOS not meaningful for past weeks — no buying decisions.
                 actual_window.append(b.get("actual_sales_units", 0))
                 if len(actual_window) > 4:
                     actual_window.pop(0)
-                b["wos"] = None
+                b["wos"]              = None
+                b["fwd_coverage_wks"] = None
                 prev_eop = b["eop_units"]
                 continue
 
@@ -777,15 +788,25 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
                 b["eop_units"] = max(0, b["bop_units"] - units_s + b["total_receipt_units"])
             prev_eop = b["eop_units"]
 
+            wos_s     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
+            wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
+
             if b.get("is_ongoing"):
-                # Ongoing: trailing WOS
                 trail_avg = sum(actual_window) / len(actual_window) if actual_window else 0
-                b["wos"] = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else 99.0
+                b["wos"]              = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else 99.0
+                b["fwd_coverage_wks"] = None   # no pipeline meaning for current week
             else:
-                # Planning: fixed 8-week forward avg
-                wos_s    = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
-                wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
+                # WOS = EOP / 8-week forward avg (current stock only)
                 b["wos"] = round(b["eop_units"] / wos_avg_s, 2) if wos_avg_s > 0 else 99.0
+                # Forward Coverage = (EOP + OO Placed next lead_time weeks) / 8-week avg
+                # OO Placed in future stream rows IS the in-transit pipeline
+                pipeline = sum(
+                    px.get("total_receipt_units", 0)
+                    for px in stream[i + 1 : i + 1 + lead_time_s]
+                )
+                b["fwd_coverage_wks"] = round(
+                    (b["eop_units"] + pipeline) / wos_avg_s, 2
+                ) if wos_avg_s > 0 else 99.0
 
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
