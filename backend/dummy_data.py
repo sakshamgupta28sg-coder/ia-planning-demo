@@ -155,8 +155,7 @@ def generate_wp_data() -> List[Dict]:
                 eop = max(0, current_bop - units + receipt_units)
                 bop[ch] = eop
 
-                oo_placed = round(receipt_units * 0.6)
-                oo_unplaced = round(receipt_units * 0.4)
+                oo_placed = receipt_units
 
                 is_past = week_num < 20
                 actual_units   = round(units * random.uniform(0.78, 1.08)) if is_past else 0
@@ -189,8 +188,7 @@ def generate_wp_data() -> List[Dict]:
                     "bop_cost": round(current_bop * m["auc"], 2),
                     "eop_cost": round(eop * m["auc"], 2),
                     "on_order_placed_total_unit": oo_placed,
-                    "on_order_unplaced_total_unit": oo_unplaced,
-                    "total_receipt_units": receipt_units,
+                    "total_receipt_units": oo_placed,
                     "recomm_receipt_units": 0,   # filled in pass 2
                     "actualised": is_past,
                     "is_ongoing": (wk == CURRENT_WEEK),
@@ -460,7 +458,7 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
 
     # ── OO placed: update total receipts ───────────────────────────────────────
     elif trigger == "on_order_placed_total_unit":
-        row["total_receipt_units"] = row["on_order_placed_total_unit"] + row["on_order_unplaced_total_unit"]
+        row["total_receipt_units"] = row["on_order_placed_total_unit"]
 
     # Sync units from row (may have been back-calculated above)
     units = row["written_sales_units"]
@@ -488,8 +486,8 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
     avail = row["bop_units"] + row["total_receipt_units"]
     row["sell_through_perc"] = round(row["actual_sales_units"] / avail, 4) if avail > 0 and row.get("actualised") else 0.0
-    row["otb_units"]   = row["on_order_unplaced_total_unit"]
-    row["otb_dollars"] = round(row["otb_units"] * auc, 2)
+    row["otb_units"]   = 0
+    row["otb_dollars"] = 0.0
     if row.get("actualised"):
         row["variance_units"]      = row["written_sales_units"] - row["actual_sales_units"]
         row["variance_dollars"]    = round(row["written_sales_dollars"] - row["actual_sales_dollars"], 2)
@@ -532,7 +530,6 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
                 "total_receipt_units":       0,
                 "recomm_receipt_units":      0,
                 "on_order_placed_total_unit":   0,
-                "on_order_unplaced_total_unit": 0,
                 "actualised":  r["actualised"],
                 "is_ongoing":  r.get("is_ongoing", False),
                 "actual_sales_units":   0,
@@ -554,7 +551,6 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         b["total_receipt_units"]         += r["total_receipt_units"]
         b["recomm_receipt_units"]        += r["recomm_receipt_units"]
         b["on_order_placed_total_unit"]  += r["on_order_placed_total_unit"]
-        b["on_order_unplaced_total_unit"]+= r["on_order_unplaced_total_unit"]
         b["actual_sales_units"]          += r["actual_sales_units"]
         b["actual_sales_dollars"]         = round(b["actual_sales_dollars"] + r["actual_sales_dollars"], 2)
         b["actual_sales_cost"]            = round(b["actual_sales_cost"]    + r["actual_sales_cost"], 2)
@@ -596,9 +592,8 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         avail = b["bop_units"] + b["total_receipt_units"]
         b["sell_through_perc"] = round(b["actual_sales_units"] / avail, 4) if avail > 0 and b["actualised"] else 0.0
 
-        # OTB
-        b["otb_units"]   = b["on_order_unplaced_total_unit"]
-        b["otb_dollars"] = round(b["otb_units"] * b["written_auc"], 2)
+        b["otb_units"]   = 0
+        b["otb_dollars"] = 0.0
 
         # Plan vs Actual variance
         if b["actualised"]:

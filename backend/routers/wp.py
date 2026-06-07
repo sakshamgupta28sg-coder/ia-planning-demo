@@ -56,7 +56,6 @@ def get_wp_by_week(
                 "total_receipt_units":         0,
                 "recomm_receipt_units":        0,
                 "on_order_placed_total_unit":  0,
-                "on_order_unplaced_total_unit":0,
                 "actual_sales_units":          0,
                 "actual_sales_dollars":        0.0,
                 "actual_sales_cost":           0.0,
@@ -89,7 +88,6 @@ def get_wp_by_week(
         w["total_receipt_units"]          += r["total_receipt_units"]
         w["recomm_receipt_units"]         += r["recomm_receipt_units"]
         w["on_order_placed_total_unit"]   += r["on_order_placed_total_unit"]
-        w["on_order_unplaced_total_unit"] += r.get("on_order_unplaced_total_unit", 0)
         w["actual_sales_units"]           += r.get("actual_sales_units", 0)
         w["actual_sales_dollars"]          = round(w["actual_sales_dollars"] + r.get("actual_sales_dollars", 0.0), 2)
         w["actual_sales_cost"]             = round(w["actual_sales_cost"]    + r.get("actual_sales_cost", 0.0), 2)

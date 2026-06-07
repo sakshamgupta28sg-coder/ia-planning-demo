@@ -18,7 +18,7 @@ type WPRow = {
   written_dr_perc: number; written_discount_dollars: number;
   bop_units: number; eop_units: number;
   total_receipt_units: number; recomm_receipt_units: number;
-  on_order_placed_total_unit: number; on_order_unplaced_total_unit: number;
+  on_order_placed_total_unit: number;
   // Actuals & variance
   actual_sales_units: number; actual_sales_dollars: number; actual_sales_cost: number;
   variance_units: number | null; variance_dollars: number | null; variance_units_perc: number | null;
@@ -1019,8 +1019,7 @@ export default function WPPage() {
                 {activeTab === "inventory" && [
                   { l: "Week", left: true }, { l: "Product", left: true }, { l: "Channel", left: true },
                   { l: "BOP" }, { l: "EOP" }, { l: "WOS" },
-                  { l: "OTB U" }, { l: "OTB $" },
-                  { l: "OO Placed ✎", edit: true }, { l: "OO Unplaced" },
+                  { l: "OO Placed ✎", edit: true },
                   { l: "Rcpt Total" }, { l: "Recomm Rcpt" },
                 ].map((h) => (
                   <th key={h.l} className={`px-3 py-2 font-medium whitespace-nowrap ${h.left ? "text-left" : "text-right"} ${h.edit ? "text-blue-400" : ""}`}>{h.l}</th>
@@ -1143,7 +1142,6 @@ export default function WPPage() {
                         <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified} locked={locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "on_order_placed_total_unit", v)} />
                       </td>
-                      <td className="px-3 py-1.5 text-right text-slate-400">{fmtU(r.on_order_unplaced_total_unit)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.total_receipt_units)}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
                     </>}
