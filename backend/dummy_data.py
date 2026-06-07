@@ -104,13 +104,29 @@ def get_effective_metrics(hc: int) -> Dict:
 _FORWARD_DEMAND_INDEX: Dict[tuple, int] = {}
 
 
-def _compute_recomm_receipt(hc: int, ch: str, wk: int, bop_units: int, oo_placed: int) -> int:
+# Per SKU×channel target WOS overrides (loaded from DB at startup).
+# Key = "{hc}_{channel}"
+_CHANNEL_TARGET_WOS: Dict[str, int] = {}
+
+
+def get_target_wos(hc: int, channel: str) -> int:
+    """Channel-level target WOS override → SKU-level override → base metric."""
+    ch_key = f"{hc}_{channel}"
+    if ch_key in _CHANNEL_TARGET_WOS:
+        return _CHANNEL_TARGET_WOS[ch_key]
+    return get_effective_metrics(hc)["target_wos"]
+
+
+def _compute_recomm_receipt(hc: int, ch: str, wk: int, eop_units: int) -> int:
     """Rolling OTB Forward Coverage model.
 
-    receipt_needed = forward_demand          # sum of planned sales over look-ahead
-                   + target_eop              # = avg_weekly_demand × target_wos
-                   - bop_units              # inventory already on hand
-                   - oo_placed              # on-order already committed
+    Uses EOP (end-of-period units after this week's sales + receipts) as the
+    starting inventory — more accurate than BOP because this week's sales
+    deplete stock before the ordered receipt can arrive.
+
+    receipt_needed = forward_demand          # planned sales over look-ahead window
+                   + target_eop              # avg_weekly_demand × target_wos (buffer)
+                   - eop_units              # stock on hand at end of this week
 
     Rounded *up* to nearest case-pack; floored at 0.
     """
@@ -119,9 +135,11 @@ def _compute_recomm_receipt(hc: int, ch: str, wk: int, bop_units: int, oo_placed
     if look_ahead <= 0:
         return 0
     fwd_demand = _FORWARD_DEMAND_INDEX.get((hc, ch, wk), 0)
+    if fwd_demand <= 0:
+        return 0
     weekly_avg = fwd_demand / look_ahead
-    target_eop = round(weekly_avg * m["target_wos"])
-    raw = max(0, fwd_demand + target_eop - bop_units - oo_placed)
+    target_eop = round(weekly_avg * get_target_wos(hc, ch))
+    raw = max(0, fwd_demand + target_eop - eop_units)
     cp = m["case_pack"]
     return int(_math.ceil(raw / cp) * cp) if (raw > 0 and cp > 0) else 0
 
@@ -217,7 +235,7 @@ def generate_wp_data() -> List[Dict]:
         else:
             r["recomm_receipt_units"] = _compute_recomm_receipt(
                 r["hierarchy_code"], r["channel"], r["current_week"],
-                r["bop_units"], r["on_order_placed_total_unit"],
+                r["eop_units"],
             )
 
     return rows
@@ -332,6 +350,7 @@ from database import (
     db_batch_upsert_overrides,
     db_list_snapshots, db_get_snapshot, db_insert_snapshot, db_delete_snapshot,
     db_get_all_sku_settings, db_upsert_sku_setting,
+    db_get_all_channel_settings, db_upsert_channel_setting,
 )
 
 init_db()  # create tables on first import; no-op if already exist
@@ -370,7 +389,7 @@ def recompute_recomm_for_sku(hc: int):
         else:
             r["recomm_receipt_units"] = _compute_recomm_receipt(
                 hc, r["channel"], r["current_week"],
-                r["bop_units"], r["on_order_placed_total_unit"],
+                r["eop_units"],
             )
 
 
@@ -397,6 +416,31 @@ def _load_sku_settings():
 
 
 _load_sku_settings()
+
+
+def update_channel_target_wos(hc: int, channel: str, value: int) -> int:
+    """Persist target WOS for one SKU×channel, recompute recomm."""
+    global _CHANNEL_TARGET_WOS
+    key = f"{hc}_{channel}"
+    _CHANNEL_TARGET_WOS[key] = int(value)
+    db_upsert_channel_setting(key, {"target_wos": int(value)})
+    recompute_recomm_for_sku(hc)
+    return int(value)
+
+
+def _load_channel_settings():
+    global _CHANNEL_TARGET_WOS
+    for key, data in db_get_all_channel_settings().items():
+        if "target_wos" in data:
+            _CHANNEL_TARGET_WOS[key] = int(data["target_wos"])
+    # Recompute affected SKUs
+    affected = {int(key.split("_")[0]) for key in _CHANNEL_TARGET_WOS}
+    for hc in affected:
+        if hc in HIERARCHY_METRICS:
+            recompute_recomm_for_sku(hc)
+
+
+_load_channel_settings()
 
 
 def _ovr_key(hc: int, wk: int, ch: str) -> str:
@@ -477,13 +521,20 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     if not row.get("actualised") and not row.get("is_ongoing"):
         row["recomm_receipt_units"] = _compute_recomm_receipt(
             row["hierarchy_code"], row["channel"], row["current_week"],
-            row["bop_units"], row["on_order_placed_total_unit"],
+            row["eop_units"],
         )
     else:
         row["recomm_receipt_units"] = 0
 
-    # ── Analytics ──────────────────────────────────────────────────────────────
-    row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
+    # ── WOS — forward avg for planning, simple for locked weeks ───────────────
+    if not row.get("actualised") and not row.get("is_ongoing"):
+        _m = get_effective_metrics(row["hierarchy_code"])
+        _la = _m["lead_time_weeks"] + _m["safety_weeks"]
+        _fwd = _FORWARD_DEMAND_INDEX.get((row["hierarchy_code"], row["channel"], row["current_week"]), 0)
+        _fwd_avg = _fwd / _la if _la > 0 else 0
+        row["wos"] = round(row["eop_units"] / _fwd_avg, 2) if _fwd_avg > 0 else 99.0
+    else:
+        row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
     avail = row["bop_units"] + row["total_receipt_units"]
     row["sell_through_perc"] = round(row["actual_sales_units"] / avail, 4) if avail > 0 and row.get("actualised") else 0.0
     row["otb_units"]   = 0
@@ -627,27 +678,48 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         if key in buckets:
             buckets[key] = _recalc(buckets[key], ovr)
 
-    # ── BOP chain propagation ──────────────────────────────────────────────────
-    # _recalc updates eop for an edited row but leaves the NEXT week's bop stale.
-    # Walk each hc×channel stream in week order and enforce bop[N+1] = eop[N].
-    # Actualised weeks are historical — read their eop but don't modify their bop.
+    # ── BOP chain propagation + WOS ───────────────────────────────────────────
+    # Enforce bop[N+1] = eop[N] and compute WOS with correct denominator:
+    #   Actualised / ongoing → trailing 4-week actual sales avg
+    #   Planning             → forward N-week planned sales avg
     _streams: Dict[tuple, list] = {}
     for b in buckets.values():
         _streams.setdefault((b["hierarchy_code"], b["channel"]), []).append(b)
 
-    for stream in _streams.values():
+    for (hc_s, ch_s), stream in _streams.items():
         stream.sort(key=lambda x: x["current_week"])
         prev_eop = None
+        actual_window: List[int] = []   # rolling 4-week actual sales for trailing WOS
+        m_s = get_effective_metrics(hc_s)
+        look_ahead_s = m_s["lead_time_weeks"] + m_s["safety_weeks"]
+
         for b in stream:
             if b.get("actualised"):
-                prev_eop = b["eop_units"]   # carry forward, don't overwrite historical row
+                # Historical: don't touch BOP; update trailing window; compute WOS
+                actual_window.append(b.get("actual_sales_units", 0))
+                if len(actual_window) > 4:
+                    actual_window.pop(0)
+                trail_avg = sum(actual_window) / len(actual_window) if actual_window else 0
+                b["wos"] = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else 99.0
+                prev_eop = b["eop_units"]
                 continue
+
+            # Propagate BOP
             if prev_eop is not None:
                 b["bop_units"] = prev_eop
-                units = b["written_sales_units"]
-                b["eop_units"] = max(0, b["bop_units"] - units + b["total_receipt_units"])
-                b["wos"] = round(b["eop_units"] / units, 2) if units > 0 else 99.0
+                units_s = b["written_sales_units"]
+                b["eop_units"] = max(0, b["bop_units"] - units_s + b["total_receipt_units"])
             prev_eop = b["eop_units"]
+
+            if b.get("is_ongoing"):
+                # Ongoing: trailing WOS
+                trail_avg = sum(actual_window) / len(actual_window) if actual_window else 0
+                b["wos"] = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else 99.0
+            else:
+                # Planning: forward WOS
+                fwd_s = _FORWARD_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
+                fwd_avg_s = fwd_s / look_ahead_s if look_ahead_s > 0 else 0
+                b["wos"] = round(b["eop_units"] / fwd_avg_s, 2) if fwd_avg_s > 0 else 99.0
 
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
@@ -785,7 +857,7 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
             else:
                 r["recomm_receipt_units"] = _compute_recomm_receipt(
                     hc, r["channel"], r["current_week"],
-                    r["bop_units"], r["on_order_placed_total_unit"],
+                    r["eop_units"],
                 )
 
 
@@ -822,7 +894,7 @@ def _reset_fwd_demand_and_recomm():
         else:
             r["recomm_receipt_units"] = _compute_recomm_receipt(
                 r["hierarchy_code"], r["channel"], r["current_week"],
-                r["bop_units"], r["on_order_placed_total_unit"],
+                r["eop_units"],
             )
 
 

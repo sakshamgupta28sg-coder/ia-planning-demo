@@ -44,6 +44,30 @@ def init_db():
                 data            TEXT    NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS channel_settings (
+                key   TEXT PRIMARY KEY,
+                data  TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+# ── Channel Settings CRUD ──────────────────────────────────────────────────────
+
+def db_get_all_channel_settings() -> Dict[str, Dict]:
+    """Return all per-SKU×channel settings keyed by '{hc}_{channel}'."""
+    with _conn() as conn:
+        rows = conn.execute("SELECT key, data FROM channel_settings").fetchall()
+    return {r["key"]: json.loads(r["data"]) for r in rows}
+
+
+def db_upsert_channel_setting(key: str, data: Dict):
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO channel_settings (key, data) VALUES (?, ?)",
+            (key, json.dumps(data)),
+        )
         conn.commit()
 
 

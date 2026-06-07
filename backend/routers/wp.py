@@ -6,6 +6,7 @@ from dummy_data import (
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
     get_all_snapshots, apply_top_down,
     get_effective_metrics, update_sku_setting, EDITABLE_SKU_FIELDS,
+    get_target_wos, update_channel_target_wos, _CHANNEL_TARGET_WOS,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -209,6 +210,34 @@ def put_sku_setting(hierarchy_code: int, body: SKUSettingRequest):
     except KeyError:
         raise HTTPException(404, f"hierarchy_code {hierarchy_code} not found")
     return {"hierarchy_code": hierarchy_code, **effective}
+
+
+# ── Target WOS per SKU×Channel ───────────────────────────────────────────────
+@router.get("/target-wos")
+def get_all_target_wos():
+    """Return target_wos for every SKU×channel combination."""
+    result = []
+    for h in HIERARCHIES:
+        hc = h["hierarchy_code"]
+        for ch in CHANNELS:
+            result.append({
+                "hierarchy_code": hc,
+                "channel": ch,
+                "target_wos": get_target_wos(hc, ch),
+            })
+    return result
+
+
+class TargetWOSRequest(BaseModel):
+    value: int = Field(ge=1)
+
+
+@router.put("/target-wos/{hierarchy_code}/{channel}")
+def put_target_wos(hierarchy_code: int, channel: str, body: TargetWOSRequest):
+    if channel not in CHANNELS:
+        raise HTTPException(400, f"Unknown channel '{channel}'. Valid: {CHANNELS}")
+    effective = update_channel_target_wos(hierarchy_code, channel, body.value)
+    return {"hierarchy_code": hierarchy_code, "channel": channel, "target_wos": effective}
 
 
 # ── Edit row ──────────────────────────────────────────────────────────────────

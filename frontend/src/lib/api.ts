@@ -123,6 +123,21 @@ export async function updateSKUSetting(hierarchy_code: number, field: string, va
   return res.json();
 }
 
+export async function fetchTargetWOS() {
+  const res = await fetch(`${BASE}/wp/target-wos`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function updateTargetWOS(hierarchy_code: number, channel: string, value: number) {
+  const res = await fetch(`${BASE}/wp/target-wos/${hierarchy_code}/${channel}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function topDownDistribute(body: {
   hierarchy_codes: number[];
   channels: string[];

@@ -4,6 +4,7 @@ import {
   fetchWPByWeek, fetchWPSummary, fetchWPFilters, fetchPortfolio,
   editWPRow, resetOverrides, fetchSnapshots, saveSnapshotAPI, restoreSnapshotAPI, deleteSnapshotAPI,
   topDownDistribute, fetchSKUSettings, updateSKUSetting,
+  fetchTargetWOS, updateTargetWOS,
 } from "@/lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -230,6 +231,8 @@ export default function WPPage() {
   const [skuSettings, setSkuSettings] = useState<Record<number, SKUSetting>>({});
   const [discPctMode, setDiscPctMode] = useState<"hold_units" | "hold_dollars">("hold_units");
   const [chartCombo, setChartCombo] = useState<string>("");
+  // target WOS keyed by "{hc}_{channel}"
+  const [targetWOS, setTargetWOS] = useState<Record<string, number>>({});
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
@@ -274,12 +277,18 @@ export default function WPPage() {
     setSkuSettings(Object.fromEntries(list.map((s) => [s.hierarchy_code, s])));
   }, []);
 
+  const reloadTargetWOS = useCallback(async () => {
+    const list: { hierarchy_code: number; channel: string; target_wos: number }[] = await fetchTargetWOS();
+    setTargetWOS(Object.fromEntries(list.map((s) => [`${s.hierarchy_code}_${s.channel}`, s.target_wos])));
+  }, []);
+
   useEffect(() => {
     fetchWPSummary({ baseline: "true" }).then(setBaselineSummary);
     fetchWPFilters().then(setFilters);
     fetchSnapshots().then(setSnapshots);
     reloadPortfolioAndSummary();
     reloadSkuSettings();
+    reloadTargetWOS();
   }, []);
 
   useEffect(() => { reloadRows(); }, [reloadRows]);
@@ -318,6 +327,16 @@ export default function WPPage() {
       reloadPortfolioAndSummary();
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "Edit failed");
+    }
+  }
+
+  async function handleTargetWOSEdit(hc: number, channel: string, value: number) {
+    setEditError("");
+    try {
+      await updateTargetWOS(hc, channel, Math.round(value));
+      await Promise.all([reloadTargetWOS(), reloadRows()]);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Target WOS update failed");
     }
   }
 
@@ -723,7 +742,7 @@ export default function WPPage() {
         <table className="w-full text-xs text-slate-300">
           <thead>
             <tr className="border-b border-slate-700 text-slate-400">
-              {["", "SKU", "Product", "Sales Units", "Sales $", "GM $", "GM %", "Lead Time ✎", "Case Pack ✎", "Status"].map((h) => (
+              {["", "SKU", "Product", "Sales Units", "Sales $", "GM $", "GM %", "Lead Time ✎ (wks)", "Case Pack ✎ (units)", "Status"].map((h) => (
                 <th key={h} className={`px-3 py-2 font-medium ${h === "" || h === "SKU" || h === "Product" ? "text-left" : "text-right"} ${h.includes("✎") ? "text-blue-400" : ""}`}>{h}</th>
               ))}
             </tr>
@@ -950,6 +969,43 @@ export default function WPPage() {
             <span className="text-[10px] text-slate-600">
               Distributes total across planning weeks · LY → LLY → plan weights
             </span>
+          </div>
+        )}
+
+        {/* Target WOS per SKU×Channel */}
+        {canEdit && activeTab === "plan" && (
+          <div className="px-4 py-2 border-b border-slate-700 flex flex-wrap items-center gap-3 bg-slate-800/30">
+            <span className="text-xs text-slate-400 font-medium">Target WOS:</span>
+            {selectedHcs.length === 1 && selectedChannels.length === 1 ? (
+              <>
+                <EditableNumber
+                  value={targetWOS[`${selectedHcs[0]}_${selectedChannels[0]}`] ?? 6}
+                  onCommit={(v) => handleTargetWOSEdit(Number(selectedHcs[0]), selectedChannels[0], v)}
+                />
+                <span className="text-[10px] text-slate-500">
+                  wks buffer at end of look-ahead · changes recomm receipt
+                </span>
+              </>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {selectedHcs.flatMap((hc) =>
+                  selectedChannels.map((ch) => {
+                    const key = `${hc}_${ch}`;
+                    const skuInfo = filters.hierarchies.find((h) => String(h.hierarchy_code) === hc);
+                    return (
+                      <span key={key} className="flex items-center gap-1.5 bg-slate-700 rounded px-2 py-0.5 text-xs text-slate-300">
+                        <span className="text-slate-500">{skuInfo?.sku_code} × {ch}</span>
+                        <EditableNumber
+                          value={targetWOS[key] ?? 6}
+                          onCommit={(v) => handleTargetWOSEdit(Number(hc), ch, v)}
+                        />
+                        <span className="text-slate-600 text-[10px]">wks</span>
+                      </span>
+                    );
+                  })
+                )}
+              </div>
+            )}
           </div>
         )}
 
