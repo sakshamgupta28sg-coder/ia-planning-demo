@@ -999,7 +999,7 @@ export default function WPPage() {
                   { l: "Sales U ✎", edit: true }, { l: "Sales $ ✎", edit: true },
                   { l: "List Price (AIR)" }, { l: "Disc% ✎", edit: true }, { l: "Disc $" }, { l: "AUR" },
                   { l: "AUC" }, { l: "GM $" }, { l: "GM %" },
-                  { l: "OO Placed ✎", edit: true }, { l: "BOP" }, { l: "EOP" },
+                  { l: "OO Placed ✎", edit: true }, { l: "BOP" }, { l: "Rcpt" }, { l: "EOP" },
                   { l: "WOS" }, { l: "Recomm Rcpt" },
                 ].map((h) => (
                   <th key={h.l} className={`px-3 py-2 font-medium whitespace-nowrap ${h.left ? "text-left" : "text-right"} ${h.edit ? "text-blue-400" : ""}`}>{h.l}</th>
@@ -1103,6 +1103,7 @@ export default function WPPage() {
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "on_order_placed_total_unit", v)} />
                       </td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.bop_units)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-400" title="Total receipts inbound this week">{fmtU(r.total_receipt_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
                       <td className={`px-3 py-1.5 text-right ${wosColor(r.wos)}`}>{r.wos}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
