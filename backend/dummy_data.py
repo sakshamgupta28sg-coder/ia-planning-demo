@@ -99,9 +99,15 @@ def get_effective_metrics(hc: int) -> Dict:
     return base
 
 
+# Fixed forward window used for WOS denominator (independent of lead-time).
+WOS_WINDOW = 8
+
 # Populated by generate_wp_data(); keyed (hc, ch, wk) → sum of planned units
 # over the look-ahead window [wk+1 … wk+lead_time_weeks+safety_weeks].
 _FORWARD_DEMAND_INDEX: Dict[tuple, int] = {}
+
+# 8-week forward demand index used exclusively for WOS denominator.
+_WOS_DEMAND_INDEX: Dict[tuple, int] = {}
 
 
 # Per SKU×channel target WOS overrides (loaded from DB at startup).
@@ -145,7 +151,7 @@ def _compute_recomm_receipt(hc: int, ch: str, wk: int, eop_units: int) -> int:
 
 
 def generate_wp_data() -> List[Dict]:
-    global _FORWARD_DEMAND_INDEX
+    global _FORWARD_DEMAND_INDEX, _WOS_DEMAND_INDEX
     rows: List[Dict] = []
     demand_index: Dict[tuple, int] = {}  # (hc, ch, wk) → planned sales units
 
@@ -153,48 +159,49 @@ def generate_wp_data() -> List[Dict]:
     for h in HIERARCHIES:
         hc = h["hierarchy_code"]
         m = HIERARCHY_METRICS[hc]
-        # Calibrate opening BOP so each channel starts with ~(target_wos + 2) weeks
-        # of coverage relative to the forward demand window starting week 22.
-        # This ensures WOS at week 21 (first planning week) is realistic regardless
-        # of where the seasonal peak falls.
-        _la_m = m["lead_time_weeks"] + m["safety_weeks"]
+        # Calibrate opening BOP so week 21 WOS ≈ (target_wos + 2) using 8-week window.
         bop = {}
         for _ch in CHANNELS:
             _fwd = sum(
                 round(m["peak_units"] * CHANNEL_SPLIT[_ch] * _seasonal_curve(wn, m["peak_week"]))
-                for wn in range(22, 22 + _la_m)
+                for wn in range(22, 22 + WOS_WINDOW)
             )
-            _fwd_avg = _fwd / _la_m if _la_m > 0 else 0
+            _fwd_avg = _fwd / WOS_WINDOW
             bop[_ch] = round(_fwd_avg * (m["target_wos"] + 2))
 
         for ch in CHANNELS:
             wh = WAREHOUSE_SUB_CHANNELS[ch]
             for wk in FISCAL_WEEKS:
                 week_num = wk % 100
+                is_past     = week_num < 20
+                is_ongoing  = (wk == CURRENT_WEEK)
+                is_planning = not is_past and not is_ongoing
+
                 curve = _seasonal_curve(week_num, m["peak_week"])
-                dr = _dr_perc(week_num, m["peak_week"])
+                dr    = _dr_perc(week_num, m["peak_week"])
                 units = round(m["peak_units"] * CHANNEL_SPLIT[ch] * curve * random.uniform(0.9, 1.1))
-                aur = round(m["air"] * (1 - dr), 2)
+                aur   = round(m["air"] * (1 - dr), 2)
                 sales_dollars = round(aur * units, 2)
-                sales_cost = round(m["auc"] * units, 2)
-                gm_dollar = round(sales_dollars - sales_cost, 2)
-                gm_perc = round((gm_dollar / sales_dollars) if sales_dollars else 0, 4)
+                sales_cost    = round(m["auc"] * units, 2)
+                gm_dollar     = round(sales_dollars - sales_cost, 2)
+                gm_perc       = round((gm_dollar / sales_dollars) if sales_dollars else 0, 4)
 
                 current_bop = round(bop[ch])
-                receipt_units = round(units * 1.1 * random.uniform(0.8, 1.2))
+                # Past / ongoing: historical receipts (random noise).
+                # Planning:       placeholder 0 — Pass 1b will set correct target-WOS receipts.
+                if is_past or is_ongoing:
+                    receipt_units = round(units * 1.1 * random.uniform(0.8, 1.2))
+                else:
+                    receipt_units = 0
                 eop = max(0, current_bop - units + receipt_units)
                 bop[ch] = eop
 
-                oo_placed = receipt_units
-
-                is_past = week_num < 20
                 actual_units   = round(units * random.uniform(0.78, 1.08)) if is_past else 0
                 actual_dollars = round(actual_units * aur, 2)
                 actual_cost    = round(actual_units * m["auc"], 2)
                 md_units   = round(units * dr)
                 md_dollars = round(md_units * m["air"] * dr, 2)
 
-                discount_dollars = round(units * m["air"] * dr, 2)
                 demand_index[(hc, ch, wk)] = units
                 rows.append({
                     "hierarchy_code": hc,
@@ -203,25 +210,25 @@ def generate_wp_data() -> List[Dict]:
                     "channel": ch,
                     "sub_channel": wh,
                     "current_week": wk,
-                    "written_sales_units": units,
-                    "written_sales_dollars": sales_dollars,
-                    "written_sales_cost": sales_cost,
-                    "written_aur": aur,
-                    "written_auc": m["auc"],
-                    "written_air": m["air"],
-                    "written_dr_perc": dr,
-                    "written_discount_dollars": discount_dollars,
-                    "written_gm_dollar": gm_dollar,
-                    "written_gm_perc": gm_perc,
-                    "bop_units": current_bop,
-                    "eop_units": eop,
-                    "bop_cost": round(current_bop * m["auc"], 2),
-                    "eop_cost": round(eop * m["auc"], 2),
-                    "on_order_placed_total_unit": oo_placed,
-                    "total_receipt_units": oo_placed,
-                    "recomm_receipt_units": 0,   # filled in pass 2
-                    "actualised": is_past,
-                    "is_ongoing": (wk == CURRENT_WEEK),
+                    "written_sales_units":    units,
+                    "written_sales_dollars":  sales_dollars,
+                    "written_sales_cost":     sales_cost,
+                    "written_aur":            aur,
+                    "written_auc":            m["auc"],
+                    "written_air":            m["air"],
+                    "written_dr_perc":        dr,
+                    "written_discount_dollars": round(units * m["air"] * dr, 2),
+                    "written_gm_dollar":      gm_dollar,
+                    "written_gm_perc":        gm_perc,
+                    "bop_units":              current_bop,
+                    "eop_units":              eop,
+                    "bop_cost":               round(current_bop * m["auc"], 2),
+                    "eop_cost":               round(eop * m["auc"], 2),
+                    "on_order_placed_total_unit": receipt_units,
+                    "total_receipt_units":    receipt_units,
+                    "recomm_receipt_units":   0,   # filled in Pass 3
+                    "actualised":   is_past,
+                    "is_ongoing":   is_ongoing,
                     "actual_sales_units":   actual_units,
                     "actual_sales_dollars": actual_dollars,
                     "actual_sales_cost":    actual_cost,
@@ -229,18 +236,62 @@ def generate_wp_data() -> List[Dict]:
                     "markdown_dollars":     md_dollars,
                 })
 
-    # ── Build forward demand index (look-ahead window per SKU × channel × week) ─
+    # ── Build demand indexes ──────────────────────────────────────────────────
     wk_pos = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
     _FORWARD_DEMAND_INDEX = {}
+    _WOS_DEMAND_INDEX = {}
     for (hc, ch, wk) in demand_index:
-        m = HIERARCHY_METRICS[hc]
-        look_ahead = m["lead_time_weeks"] + m["safety_weeks"]
+        m   = HIERARCHY_METRICS[hc]
+        la  = m["lead_time_weeks"] + m["safety_weeks"]
         idx = wk_pos[wk]
-        future_wks = FISCAL_WEEKS[idx + 1 : idx + 1 + look_ahead]
-        _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(demand_index.get((hc, ch, fw), 0) for fw in future_wks)
+        _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(
+            demand_index.get((hc, ch, fw), 0)
+            for fw in FISCAL_WEEKS[idx + 1: idx + 1 + la]
+        )
+        _WOS_DEMAND_INDEX[(hc, ch, wk)] = sum(
+            demand_index.get((hc, ch, fw), 0)
+            for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
+        )
 
-    # ── Pass 2: backfill recomm_receipt_units (Rolling OTB Forward Coverage) ──
-    # Only meaningful for open planning weeks — zero out locked/actualised weeks.
+    # ── Pass 1b: set planning-week receipts so WOS ≈ target_wos ──────────────
+    # Walk each SKU×channel stream forward from CURRENT_WEEK's EOP; set receipt
+    # = units needed to bring EOP up to (target_wos × fwd_avg_8wk) each week.
+    row_lkp: Dict[tuple, Dict] = {
+        (r["hierarchy_code"], r["channel"], r["current_week"]): r for r in rows
+    }
+    for h in HIERARCHIES:
+        hc = h["hierarchy_code"]
+        m  = HIERARCHY_METRICS[hc]
+        cp = m["case_pack"]
+        for ch in CHANNELS:
+            ongoing = row_lkp.get((hc, ch, CURRENT_WEEK))
+            prev_eop = ongoing["eop_units"] if ongoing else 0
+            for wk in FISCAL_WEEKS:
+                r = row_lkp.get((hc, ch, wk))
+                if not r or r.get("actualised") or r.get("is_ongoing"):
+                    continue
+                # BOP = previous week's EOP
+                r["bop_units"] = prev_eop
+                r["bop_cost"]  = round(prev_eop * m["auc"], 2)
+                sales = r["written_sales_units"]
+                eop_no_rcpt = max(0, prev_eop - sales)
+                # Target EOP = target_wos × 8-week forward avg
+                wos_dem  = _WOS_DEMAND_INDEX.get((hc, ch, wk), 0)
+                fwd_avg8 = wos_dem / WOS_WINDOW if WOS_WINDOW > 0 else 0
+                target_eop = round(m["target_wos"] * fwd_avg8)
+                if target_eop <= eop_no_rcpt:
+                    receipt = 0
+                else:
+                    raw     = target_eop - eop_no_rcpt
+                    receipt = int(_math.ceil(raw / cp) * cp) if cp > 0 else int(raw)
+                eop = eop_no_rcpt + receipt
+                r["total_receipt_units"]         = receipt
+                r["on_order_placed_total_unit"]  = receipt
+                r["eop_units"] = eop
+                r["eop_cost"]  = round(eop * m["auc"], 2)
+                prev_eop = eop
+
+    # ── Pass 3: backfill recomm_receipt_units (Rolling OTB Forward Coverage) ──
     for r in rows:
         if r["actualised"] or r.get("is_ongoing"):
             r["recomm_receipt_units"] = 0
@@ -372,7 +423,7 @@ EDITABLE_SKU_FIELDS = {"case_pack", "lead_time_weeks", "safety_weeks", "target_w
 
 
 def recompute_recomm_for_sku(hc: int):
-    """Rebuild forward demand index + recomm_receipt for one SKU after settings change."""
+    """Rebuild forward demand index + WOS index + recomm_receipt for one SKU after settings change."""
     m = get_effective_metrics(hc)
     look_ahead = m["lead_time_weeks"] + m["safety_weeks"]
     wk_pos = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
@@ -383,13 +434,17 @@ def recompute_recomm_for_sku(hc: int):
         for r in WP_DATA if r["hierarchy_code"] == hc
     }
 
-    # Rewrite forward demand index entries for this SKU only
+    # Rewrite both demand indexes for this SKU
     for ch in CHANNELS:
         for wk in FISCAL_WEEKS:
             idx = wk_pos[wk]
-            future_wks = FISCAL_WEEKS[idx + 1 : idx + 1 + look_ahead]
             _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(
-                demand_map.get((hc, ch, fw), 0) for fw in future_wks
+                demand_map.get((hc, ch, fw), 0)
+                for fw in FISCAL_WEEKS[idx + 1: idx + 1 + look_ahead]
+            )
+            _WOS_DEMAND_INDEX[(hc, ch, wk)] = sum(
+                demand_map.get((hc, ch, fw), 0)
+                for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
             )
 
     # Recompute recomm_receipt_units for all rows of this SKU
@@ -538,17 +593,15 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     else:
         row["recomm_receipt_units"] = 0
 
-    # ── WOS — forward avg for planning; null for actualized (no buying decisions) ─
+    # ── WOS — 8-week forward avg for planning; null for actualized ────────────
     if row.get("actualised"):
         row["wos"] = None
     elif row.get("is_ongoing"):
         row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
     else:
-        _m = get_effective_metrics(row["hierarchy_code"])
-        _la = _m["lead_time_weeks"] + _m["safety_weeks"]
-        _fwd = _FORWARD_DEMAND_INDEX.get((row["hierarchy_code"], row["channel"], row["current_week"]), 0)
-        _fwd_avg = _fwd / _la if _la > 0 else 0
-        row["wos"] = round(row["eop_units"] / _fwd_avg, 2) if _fwd_avg > 0 else 99.0
+        _wos_fwd = _WOS_DEMAND_INDEX.get((row["hierarchy_code"], row["channel"], row["current_week"]), 0)
+        _wos_avg = _wos_fwd / WOS_WINDOW if WOS_WINDOW > 0 else 0
+        row["wos"] = round(row["eop_units"] / _wos_avg, 2) if _wos_avg > 0 else 99.0
     avail = row["bop_units"] + row["total_receipt_units"]
     row["sell_through_perc"] = round(row["actual_sales_units"] / avail, 4) if avail > 0 and row.get("actualised") else 0.0
     row["otb_units"]   = 0
@@ -729,10 +782,10 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
                 trail_avg = sum(actual_window) / len(actual_window) if actual_window else 0
                 b["wos"] = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else 99.0
             else:
-                # Planning: forward WOS
-                fwd_s = _FORWARD_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
-                fwd_avg_s = fwd_s / look_ahead_s if look_ahead_s > 0 else 0
-                b["wos"] = round(b["eop_units"] / fwd_avg_s, 2) if fwd_avg_s > 0 else 99.0
+                # Planning: fixed 8-week forward avg
+                wos_s    = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
+                wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
+                b["wos"] = round(b["eop_units"] / wos_avg_s, 2) if wos_avg_s > 0 else 99.0
 
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
@@ -806,11 +859,11 @@ def get_all_snapshots() -> List[Dict]:
 
 
 def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
-    """Rebuild _FORWARD_DEMAND_INDEX from WP_DATA + current overrides for given SKUs,
-    then recompute recomm_receipt_units in WP_DATA for those SKUs.
+    """Rebuild _FORWARD_DEMAND_INDEX + _WOS_DEMAND_INDEX from WP_DATA + current overrides
+    for given SKUs, then recompute recomm_receipt_units in WP_DATA for those SKUs.
 
     Called whenever written_sales_units change (top-down or single-cell edit) so
-    recomm for ALL weeks stays consistent with the updated demand.
+    recomm and WOS for ALL weeks stay consistent with the updated demand.
     """
     _channels = channels if channels is not None else CHANNELS
     overrides = db_get_overrides()
@@ -855,11 +908,17 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
                 else:
                     eff_units[r["current_week"]] = r["written_sales_units"]
 
-            # Rebuild forward demand entries for all weeks of this SKU×channel
+            # Rebuild both demand indexes for all weeks of this SKU×channel
             for wk in FISCAL_WEEKS:
                 idx = wk_pos[wk]
-                future_wks = FISCAL_WEEKS[idx + 1: idx + 1 + look_ahead]
-                _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(eff_units.get(fw, 0) for fw in future_wks)
+                _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(
+                    eff_units.get(fw, 0)
+                    for fw in FISCAL_WEEKS[idx + 1: idx + 1 + look_ahead]
+                )
+                _WOS_DEMAND_INDEX[(hc, ch, wk)] = sum(
+                    eff_units.get(fw, 0)
+                    for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
+                )
 
         # Rewrite recomm in WP_DATA for this SKU (non-overridden rows serve their value directly)
         for r in WP_DATA:
@@ -896,9 +955,13 @@ def _reset_fwd_demand_and_recomm():
         for ch in CHANNELS:
             for wk in FISCAL_WEEKS:
                 idx = wk_pos[wk]
-                future_wks = FISCAL_WEEKS[idx + 1: idx + 1 + look_ahead]
                 _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(
-                    demand_map.get((hc, ch, fw), 0) for fw in future_wks
+                    demand_map.get((hc, ch, fw), 0)
+                    for fw in FISCAL_WEEKS[idx + 1: idx + 1 + look_ahead]
+                )
+                _WOS_DEMAND_INDEX[(hc, ch, wk)] = sum(
+                    demand_map.get((hc, ch, fw), 0)
+                    for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
                 )
 
     for r in WP_DATA:
