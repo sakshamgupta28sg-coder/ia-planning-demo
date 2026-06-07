@@ -229,6 +229,7 @@ export default function WPPage() {
   const [topDownLoading, setTopDownLoading] = useState(false);
   const [skuSettings, setSkuSettings] = useState<Record<number, SKUSetting>>({});
   const [discPctMode, setDiscPctMode] = useState<"hold_units" | "hold_dollars">("hold_units");
+  const [chartCombo, setChartCombo] = useState<string>("");
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
@@ -282,6 +283,18 @@ export default function WPPage() {
   }, []);
 
   useEffect(() => { reloadRows(); }, [reloadRows]);
+
+  // Reset chart combo to first available whenever rows change
+  useEffect(() => {
+    if (rows.length === 0) { setChartCombo(""); return; }
+    const first = rows[0];
+    const key = `${first.hierarchy_code}_${first.channel}`;
+    setChartCombo((prev) => {
+      // Keep existing selection if still valid
+      const valid = rows.some((r) => `${r.hierarchy_code}_${r.channel}` === prev);
+      return valid ? prev : key;
+    });
+  }, [rows]);
 
   // Toggle a hierarchy in the multi-selection (from table row click)
   function toggleHc(hcStr: string) {
@@ -365,10 +378,27 @@ export default function WPPage() {
     }
   }
 
-  // Aggregate rows by week for the chart (multiple product×channel rows share the same week)
+  // Unique SKU × Channel combos available in current rows
+  const chartCombos = (() => {
+    const seen = new Map<string, { key: string; label: string }>();
+    for (const r of rows) {
+      const key = `${r.hierarchy_code}_${r.channel}`;
+      if (!seen.has(key)) {
+        const skuInfo = filters.hierarchies.find((h) => h.hierarchy_code === r.hierarchy_code);
+        const label = `${skuInfo?.sku_code ?? r.hierarchy_code} · ${skuInfo?.l2_name ?? r.hierarchy_code} × ${r.channel}`;
+        seen.set(key, { key, label });
+      }
+    }
+    return Array.from(seen.values());
+  })();
+
+  // Chart data for the selected combo only
   const chartData = (() => {
+    const [hcStr, ch] = chartCombo.split("_");
+    const hc = Number(hcStr);
     const byWeek = new Map<number, { week: string; "Sales U": number; BOP: number; EOP: number; Receipts: number }>();
     for (const r of rows) {
+      if (r.hierarchy_code !== hc || r.channel !== ch) continue;
       const wk = r.current_week;
       if (!byWeek.has(wk)) byWeek.set(wk, { week: String(wk).slice(-2), "Sales U": 0, BOP: 0, EOP: 0, Receipts: 0 });
       const w = byWeek.get(wk)!;
@@ -801,9 +831,19 @@ export default function WPPage() {
       {/* ── Chart (when product + channel selected) ── */}
       {canEdit && rows.length > 0 && (
         <div className="bg-slate-800 rounded-xl p-4">
-          <h2 className="text-sm font-semibold text-slate-300 mb-4">
-            {displayHcLabel} · {displayChLabel} — Units by Week
-          </h2>
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <h2 className="text-sm font-semibold text-slate-300">Units by Week</h2>
+            <select
+              value={chartCombo}
+              onChange={(e) => setChartCombo(e.target.value)}
+              className="bg-slate-700 border border-slate-600 text-xs text-slate-200 rounded px-2 py-1 outline-none focus:border-blue-500 cursor-pointer"
+            >
+              {chartCombos.map((c) => (
+                <option key={c.key} value={c.key}>{c.label}</option>
+              ))}
+            </select>
+            <span className="text-[10px] text-slate-500">{chartCombos.length} combo{chartCombos.length !== 1 ? "s" : ""} available</span>
+          </div>
           <ResponsiveContainer width="100%" height={240}>
             <LineChart data={chartData} margin={{ top: 0, right: 10, bottom: 0, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
