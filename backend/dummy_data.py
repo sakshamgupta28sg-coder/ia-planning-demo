@@ -378,28 +378,28 @@ def generate_scenario_data() -> List[Dict]:
     return rows
 
 
-_NEW_SKUS: List[Dict] = []
-_NEXT_HC = 20001
+def _next_new_sku_hc() -> int:
+    """Derive next hierarchy_code from DB max (floor at 20001)."""
+    return max(db_get_max_new_sku_hc() + 1, 20001)
 
 
 def get_new_skus() -> List[Dict]:
-    return list(_NEW_SKUS)
+    """Return all user-created SKUs from persistent storage."""
+    return db_get_all_new_skus()
 
 
 def add_new_sku(sku: Dict) -> Dict:
-    global _NEXT_HC
-    sku["hierarchy_code"] = _NEXT_HC
+    """Assign hierarchy_code, persist to DB, return the full record."""
+    hc = _next_new_sku_hc()
+    sku["hierarchy_code"] = hc
     sku["feed_type"] = "new"
-    _NEXT_HC += 1
-    _NEW_SKUS.append(sku)
+    db_insert_new_sku(hc, sku)
     return sku
 
 
 def delete_sku(hierarchy_code: int) -> bool:
-    global _NEW_SKUS
-    before = len(_NEW_SKUS)
-    _NEW_SKUS = [s for s in _NEW_SKUS if s["hierarchy_code"] != hierarchy_code]
-    return len(_NEW_SKUS) < before
+    """Delete a user-created SKU from DB. Returns True if deleted."""
+    return db_delete_new_sku(hierarchy_code)
 
 
 # Pre-generate on import
@@ -416,6 +416,7 @@ from database import (
     db_list_snapshots, db_get_snapshot, db_insert_snapshot, db_delete_snapshot,
     db_get_all_sku_settings, db_upsert_sku_setting,
     db_get_all_channel_settings, db_upsert_channel_setting,
+    db_get_all_new_skus, db_get_max_new_sku_hc, db_insert_new_sku, db_delete_new_sku,
 )
 
 init_db()  # create tables on first import; no-op if already exist

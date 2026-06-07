@@ -50,6 +50,12 @@ def init_db():
                 data  TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS new_skus (
+                hierarchy_code  INTEGER PRIMARY KEY,
+                data            TEXT    NOT NULL
+            )
+        """)
         conn.commit()
 
 
@@ -208,3 +214,40 @@ def db_batch_upsert_overrides(updates: Dict[str, Dict]):
                 (key, json.dumps(data)),
             )
         conn.commit()
+
+
+# ── New SKU CRUD ───────────────────────────────────────────────────────────────
+
+def db_get_all_new_skus() -> List[Dict]:
+    """Return all user-created SKUs ordered by hierarchy_code."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT hierarchy_code, data FROM new_skus ORDER BY hierarchy_code"
+        ).fetchall()
+    return [{**json.loads(r["data"]), "hierarchy_code": r["hierarchy_code"]} for r in rows]
+
+
+def db_get_max_new_sku_hc() -> int:
+    """Return the highest hierarchy_code in new_skus (0 if table empty)."""
+    with _conn() as conn:
+        row = conn.execute("SELECT MAX(hierarchy_code) AS m FROM new_skus").fetchone()
+    return row["m"] or 0
+
+
+def db_insert_new_sku(hierarchy_code: int, data: Dict):
+    """Persist a new SKU (hierarchy_code stored separately as PK)."""
+    payload = {k: v for k, v in data.items() if k != "hierarchy_code"}
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO new_skus (hierarchy_code, data) VALUES (?, ?)",
+            (hierarchy_code, json.dumps(payload)),
+        )
+        conn.commit()
+
+
+def db_delete_new_sku(hierarchy_code: int) -> bool:
+    """Delete a new SKU by hierarchy_code. Returns True if a row was deleted."""
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM new_skus WHERE hierarchy_code = ?", (hierarchy_code,))
+        conn.commit()
+    return cur.rowcount > 0

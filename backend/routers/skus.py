@@ -27,6 +27,12 @@ def list_skus():
 
 @router.post("/")
 def create_sku(body: NewSKURequest):
+    if body.auc <= 0:
+        raise HTTPException(400, "auc (cost) must be greater than 0")
+    if body.air <= 0:
+        raise HTTPException(400, "air (retail price) must be greater than 0")
+    if body.auc >= body.air:
+        raise HTTPException(400, f"auc ({body.auc}) must be less than air ({body.air}) — cost cannot exceed retail price")
     sku = add_new_sku({
         "l1_name": body.l1_name,
         "l2_name": body.l2_name,

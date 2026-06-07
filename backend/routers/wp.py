@@ -77,6 +77,9 @@ def get_wp_by_week(
                 "ly_dollars_var_perc":         0.0,
                 "actualised":                  r.get("actualised", False),
                 "is_ongoing":                  r.get("is_ongoing", False),
+                # Not meaningful when aggregated across SKUs — only set at SKU×channel level
+                "fwd_coverage_wks":            None,
+                "lead_time_weeks":             None,
                 "_modified":                   False,
             }
         w = weeks[wk]
@@ -107,6 +110,9 @@ def get_wp_by_week(
             w["written_aur"] = round(w["written_sales_dollars"] / w["written_sales_units"], 2)
         if w["written_sales_dollars"] > 0:
             w["written_gm_perc"] = round(w["written_gm_dollar"] / w["written_sales_dollars"], 4)
+        # Portfolio WOS: simple EOP / this-week's-plan-units.
+        # Intentionally different from SKU×Channel WOS (which uses 8wk forward avg)
+        # because demand curves differ per SKU. Select a specific SKU+Channel for accurate WOS.
         w["wos"] = None if w.get("actualised") else (round(w["eop_units"] / w["written_sales_units"], 2) if w["written_sales_units"] > 0 else 99.0)
         avail = w["bop_units"] + w["total_receipt_units"]
         w["sell_through_perc"] = round(w["actual_sales_units"] / avail, 4) if avail > 0 and w.get("actualised") else 0.0
@@ -256,6 +262,18 @@ def edit_row(body: EditRequest):
         raise HTTPException(400, f"'{body.field}' is not editable. Allowed: {EDITABLE_FIELDS}")
     if body.field == "written_dr_perc" and body.value > 1:
         raise HTTPException(400, "written_dr_perc must be between 0 and 1 (e.g. 0.15 for 15%)")
+    # Guard: actualized (past) rows are locked — editing history corrupts the record
+    raw = next(
+        (r for r in WP_DATA
+         if r["hierarchy_code"] == body.hierarchy_code
+         and r["channel"] == body.channel
+         and r["current_week"] == body.current_week),
+        None,
+    )
+    if raw is None:
+        raise HTTPException(404, "Row not found")
+    if raw.get("actualised"):
+        raise HTTPException(403, f"Week {body.current_week} is actualized and cannot be edited")
     result = apply_edit(body.hierarchy_code, body.current_week, body.channel, body.field, body.value, body.mode)
     if not result:
         raise HTTPException(404, "Row not found")
