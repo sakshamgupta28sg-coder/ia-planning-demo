@@ -109,6 +109,11 @@ _FORWARD_DEMAND_INDEX: Dict[tuple, int] = {}
 # 8-week forward demand index used exclusively for WOS denominator.
 _WOS_DEMAND_INDEX: Dict[tuple, int] = {}
 
+# Sum of already-planned OO Placed receipts over the next lead_time weeks.
+# Used by recomm to net off inventory already in the inbound pipeline so we
+# don't double-count receipts that are already scheduled to arrive.
+_PIPELINE_INDEX: Dict[tuple, int] = {}
+
 
 # Per SKU×channel target WOS overrides (loaded from DB at startup).
 # Key = "{hc}_{channel}"
@@ -132,7 +137,9 @@ def _compute_recomm_receipt(hc: int, ch: str, wk: int, eop_units: int) -> int:
 
     receipt_needed = forward_demand          # planned sales over look-ahead window
                    + target_eop              # avg_weekly_demand × target_wos (buffer)
-                   - eop_units              # stock on hand at end of this week
+                   - eop_units               # stock on hand at end of this week
+                   - pipeline                # OO already placed for next lead_time weeks
+                                             # (avoids double-ordering receipts in-flight)
 
     Rounded *up* to nearest case-pack; floored at 0.
     """
@@ -145,7 +152,8 @@ def _compute_recomm_receipt(hc: int, ch: str, wk: int, eop_units: int) -> int:
         return 0
     weekly_avg = fwd_demand / look_ahead
     target_eop = round(weekly_avg * get_target_wos(hc, ch))
-    raw = max(0, fwd_demand + target_eop - eop_units)
+    pipeline = _PIPELINE_INDEX.get((hc, ch, wk), 0)
+    raw = max(0, fwd_demand + target_eop - eop_units - pipeline)
     cp = m["case_pack"]
     return int(_math.ceil(raw / cp) * cp) if (raw > 0 and cp > 0) else 0
 
@@ -293,6 +301,19 @@ def generate_wp_data() -> List[Dict]:
                 r["eop_cost"]  = round(eop * m["auc"], 2)
                 prev_eop = eop
 
+    # ── Build pipeline index (after Pass 1b so OO Placed values are final) ──────
+    # pipeline[hc, ch, wk] = sum of on_order_placed_total_unit for the next
+    # lead_time weeks — used by recomm to avoid double-ordering in-flight stock.
+    _PIPELINE_INDEX.clear()
+    for (hc, ch, wk) in demand_index:
+        m   = HIERARCHY_METRICS[hc]
+        lt  = m["lead_time_weeks"]
+        idx = wk_pos[wk]
+        _PIPELINE_INDEX[(hc, ch, wk)] = sum(
+            row_lkp.get((hc, ch, fw), {}).get("on_order_placed_total_unit", 0)
+            for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
+        )
+
     # ── Pass 3: backfill recomm_receipt_units (Rolling OTB Forward Coverage) ──
     for r in rows:
         if r["actualised"] or r.get("is_ongoing"):
@@ -436,8 +457,13 @@ def recompute_recomm_for_sku(hc: int):
         (hc, r["channel"], r["current_week"]): r["written_sales_units"]
         for r in WP_DATA if r["hierarchy_code"] == hc
     }
+    oo_map: Dict[tuple, int] = {
+        (hc, r["channel"], r["current_week"]): r["on_order_placed_total_unit"]
+        for r in WP_DATA if r["hierarchy_code"] == hc
+    }
 
-    # Rewrite both demand indexes for this SKU
+    # Rewrite demand + pipeline indexes for this SKU
+    lt = m["lead_time_weeks"]
     for ch in CHANNELS:
         for wk in FISCAL_WEEKS:
             idx = wk_pos[wk]
@@ -448,6 +474,10 @@ def recompute_recomm_for_sku(hc: int):
             _WOS_DEMAND_INDEX[(hc, ch, wk)] = sum(
                 demand_map.get((hc, ch, fw), 0)
                 for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
+            )
+            _PIPELINE_INDEX[(hc, ch, wk)] = sum(
+                oo_map.get((hc, ch, fw), 0)
+                for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
             )
 
     # Recompute recomm_receipt_units for all rows of this SKU
@@ -829,10 +859,12 @@ def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = 
         entry["_edit_mode"] = mode
     db_upsert_override(key, entry)
 
-    # If units or dollars changed, forward demand is stale — rebuild
-    # (dollars → units back-calc in _recalc changes effective demand)
+    # Demand changed → rebuild demand indexes + pipeline + recomm
     if field in ("written_sales_units", "written_sales_dollars"):
         _rebuild_fwd_demand_and_recomm([hc], [ch])
+    # OO Placed changed → pipeline is stale → recomm for earlier weeks must be updated
+    elif field == "on_order_placed_total_unit":
+        _rebuild_pipeline_and_recomm([hc], [ch])
 
     rows = get_agg_rows(hc, ch)
     return next((r for r in rows if r["current_week"] == wk), None)
@@ -930,7 +962,8 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
                 else:
                     eff_units[r["current_week"]] = r["written_sales_units"]
 
-            # Rebuild both demand indexes for all weeks of this SKU×channel
+            # Rebuild demand + pipeline indexes for all weeks of this SKU×channel
+            lt = m["lead_time_weeks"]
             for wk in FISCAL_WEEKS:
                 idx = wk_pos[wk]
                 _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(
@@ -940,6 +973,19 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
                 _WOS_DEMAND_INDEX[(hc, ch, wk)] = sum(
                     eff_units.get(fw, 0)
                     for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
+                )
+                # Pipeline = OO Placed in WP_DATA for next lead_time weeks
+                # (overridden OO rows take precedence via the overrides dict)
+                oo_ovr = {
+                    r["current_week"]: overrides.get(
+                        _ovr_key(hc, r["current_week"], ch), {}
+                    ).get("on_order_placed_total_unit", r["on_order_placed_total_unit"])
+                    for r in WP_DATA
+                    if r["hierarchy_code"] == hc and r["channel"] == ch
+                }
+                _PIPELINE_INDEX[(hc, ch, wk)] = sum(
+                    oo_ovr.get(fw, 0)
+                    for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
                 )
 
         # Rewrite recomm in WP_DATA for this SKU (non-overridden rows serve their value directly)
@@ -955,6 +1001,41 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
                 )
 
 
+def _rebuild_pipeline_and_recomm(hcs: List[int], channels: List[str] = None):
+    """Rebuild _PIPELINE_INDEX and recompute recomm for given SKUs after OO Placed edit.
+    Lighter than _rebuild_fwd_demand_and_recomm — demand indexes are unchanged."""
+    _channels = channels if channels is not None else CHANNELS
+    overrides  = db_get_overrides()
+    wk_pos     = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
+
+    for hc in hcs:
+        m  = get_effective_metrics(hc)
+        lt = m["lead_time_weeks"]
+        for ch in _channels:
+            oo_map = {
+                r["current_week"]: overrides.get(
+                    _ovr_key(hc, r["current_week"], ch), {}
+                ).get("on_order_placed_total_unit", r["on_order_placed_total_unit"])
+                for r in WP_DATA
+                if r["hierarchy_code"] == hc and r["channel"] == ch
+            }
+            for wk in FISCAL_WEEKS:
+                idx = wk_pos[wk]
+                _PIPELINE_INDEX[(hc, ch, wk)] = sum(
+                    oo_map.get(fw, 0)
+                    for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
+                )
+        for r in WP_DATA:
+            if r["hierarchy_code"] != hc:
+                continue
+            if r["actualised"] or r.get("is_ongoing"):
+                r["recomm_receipt_units"] = 0
+            else:
+                r["recomm_receipt_units"] = _compute_recomm_receipt(
+                    hc, r["channel"], r["current_week"], r["eop_units"],
+                )
+
+
 def _reset_fwd_demand_and_recomm():
     """Rebuild _FORWARD_DEMAND_INDEX from original WP_DATA units (no planning overrides)
     and recompute WP_DATA recomm_receipt_units.  Called after reset_overrides() so recomm
@@ -967,6 +1048,11 @@ def _reset_fwd_demand_and_recomm():
         (r["hierarchy_code"], r["channel"], r["current_week"]): r["written_sales_units"]
         for r in WP_DATA
     }
+    # Baseline OO Placed (before any overrides)
+    oo_base_map: Dict[tuple, int] = {
+        (r["hierarchy_code"], r["channel"], r["current_week"]): r["on_order_placed_total_unit"]
+        for r in WP_DATA
+    }
 
     for h in HIERARCHIES:
         hc = h["hierarchy_code"]
@@ -974,6 +1060,7 @@ def _reset_fwd_demand_and_recomm():
         look_ahead = m["lead_time_weeks"] + m["safety_weeks"]
         if look_ahead <= 0:
             continue
+        lt = m["lead_time_weeks"]
         for ch in CHANNELS:
             for wk in FISCAL_WEEKS:
                 idx = wk_pos[wk]
@@ -984,6 +1071,11 @@ def _reset_fwd_demand_and_recomm():
                 _WOS_DEMAND_INDEX[(hc, ch, wk)] = sum(
                     demand_map.get((hc, ch, fw), 0)
                     for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
+                )
+                # Rebuild pipeline from baseline WP_DATA OO Placed (overrides cleared)
+                _PIPELINE_INDEX[(hc, ch, wk)] = sum(
+                    oo_base_map.get((hc, ch, fw), 0)
+                    for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
                 )
 
     for r in WP_DATA:
