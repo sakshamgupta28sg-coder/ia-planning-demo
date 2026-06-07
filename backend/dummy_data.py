@@ -632,6 +632,28 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         if key in buckets:
             buckets[key] = _recalc(buckets[key], ovr)
 
+    # ── BOP chain propagation ──────────────────────────────────────────────────
+    # _recalc updates eop for an edited row but leaves the NEXT week's bop stale.
+    # Walk each hc×channel stream in week order and enforce bop[N+1] = eop[N].
+    # Actualised weeks are historical — read their eop but don't modify their bop.
+    _streams: Dict[tuple, list] = {}
+    for b in buckets.values():
+        _streams.setdefault((b["hierarchy_code"], b["channel"]), []).append(b)
+
+    for stream in _streams.values():
+        stream.sort(key=lambda x: x["current_week"])
+        prev_eop = None
+        for b in stream:
+            if b.get("actualised"):
+                prev_eop = b["eop_units"]   # carry forward, don't overwrite historical row
+                continue
+            if prev_eop is not None:
+                b["bop_units"] = prev_eop
+                units = b["written_sales_units"]
+                b["eop_units"] = max(0, b["bop_units"] - units + b["total_receipt_units"])
+                b["wos"] = round(b["eop_units"] / units, 2) if units > 0 else 99.0
+            prev_eop = b["eop_units"]
+
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
 
