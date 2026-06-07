@@ -40,7 +40,7 @@ FISCAL_WEEKS = [int(f"2026{str(w).zfill(2)}") for w in range(1, 53)]
 #   case_pack       – minimum order quantity (round-up denominator)
 #   safety_weeks    – additional buffer added to look-ahead window
 HIERARCHY_METRICS = {
-    10001: {"air": 119.99, "auc": 44.0,  "peak_week": 14, "peak_units":  520,  # Running Shoes  – spring launch
+    10001: {"air": 119.99, "auc": 44.0,  "peak_week": 26, "peak_units":  520,  # Running Shoes  – spring marathon season (late-spring peak)
             "target_wos": 6, "lead_time_weeks": 14, "case_pack":  6, "safety_weeks": 2},
     10002: {"air":  89.99, "auc": 30.0,  "peak_week": 25, "peak_units":  680,  # Casual Sneakers – summer
             "target_wos": 6, "lead_time_weeks": 12, "case_pack":  6, "safety_weeks": 2},
@@ -153,7 +153,19 @@ def generate_wp_data() -> List[Dict]:
     for h in HIERARCHIES:
         hc = h["hierarchy_code"]
         m = HIERARCHY_METRICS[hc]
-        bop = {ch: m["peak_units"] * CHANNEL_SPLIT[ch] * 3 for ch in CHANNELS}
+        # Calibrate opening BOP so each channel starts with ~(target_wos + 2) weeks
+        # of coverage relative to the forward demand window starting week 22.
+        # This ensures WOS at week 21 (first planning week) is realistic regardless
+        # of where the seasonal peak falls.
+        _la_m = m["lead_time_weeks"] + m["safety_weeks"]
+        bop = {}
+        for _ch in CHANNELS:
+            _fwd = sum(
+                round(m["peak_units"] * CHANNEL_SPLIT[_ch] * _seasonal_curve(wn, m["peak_week"]))
+                for wn in range(22, 22 + _la_m)
+            )
+            _fwd_avg = _fwd / _la_m if _la_m > 0 else 0
+            bop[_ch] = round(_fwd_avg * (m["target_wos"] + 2))
 
         for ch in CHANNELS:
             wh = WAREHOUSE_SUB_CHANNELS[ch]
