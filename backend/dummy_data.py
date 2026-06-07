@@ -652,8 +652,9 @@ def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = 
         entry["_edit_mode"] = mode
     db_upsert_override(key, entry)
 
-    # If units changed, forward demand for all weeks of this SKU×channel is stale — rebuild
-    if field == "written_sales_units":
+    # If units or dollars changed, forward demand is stale — rebuild
+    # (dollars → units back-calc in _recalc changes effective demand)
+    if field in ("written_sales_units", "written_sales_dollars"):
         _rebuild_fwd_demand_and_recomm([hc], [ch])
 
     rows = get_agg_rows(hc, ch)
@@ -719,14 +720,37 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
             continue
 
         for ch in _channels:
-            # Effective units per week = override value (if set) else WP_DATA value
+            # Effective units per week — mirrors _recalc logic for each trigger type
             eff_units: Dict[int, int] = {}
             for r in WP_DATA:
                 if r["hierarchy_code"] != hc or r["channel"] != ch:
                     continue
                 key = _ovr_key(hc, r["current_week"], ch)
                 ovr = overrides.get(key, {})
-                eff_units[r["current_week"]] = int(ovr.get("written_sales_units", r["written_sales_units"]))
+                trigger = ovr.get("_last_edited")
+
+                if trigger == "written_sales_units" and "written_sales_units" in ovr:
+                    # Scenario 1: units edited directly
+                    eff_units[r["current_week"]] = int(ovr["written_sales_units"])
+                elif trigger == "written_sales_dollars" and "written_sales_dollars" in ovr:
+                    # Scenario 2: dollars edited → back-calc units (same as _recalc)
+                    air = r["written_air"]
+                    dr  = float(ovr.get("written_dr_perc", r["written_dr_perc"]))
+                    aur = round(air * (1 - dr), 2)
+                    eff_units[r["current_week"]] = int(round(ovr["written_sales_dollars"] / aur)) if aur > 0 else 0
+                elif trigger == "written_dr_perc" and "written_dr_perc" in ovr:
+                    # Scenarios 3/4: disc% edited — units may have changed
+                    mode = ovr.get("_edit_mode", "hold_units")
+                    air  = r["written_air"]
+                    dr   = float(ovr["written_dr_perc"])
+                    aur  = round(air * (1 - dr), 2)
+                    if mode == "hold_units":
+                        eff_units[r["current_week"]] = r["written_sales_units"]
+                    else:  # hold_dollars
+                        dollars = float(ovr.get("written_sales_dollars", r["written_sales_dollars"]))
+                        eff_units[r["current_week"]] = int(round(dollars / aur)) if aur > 0 else 0
+                else:
+                    eff_units[r["current_week"]] = r["written_sales_units"]
 
             # Rebuild forward demand entries for all weeks of this SKU×channel
             for wk in FISCAL_WEEKS:
@@ -821,7 +845,8 @@ def apply_top_down(hcs: List[int], channels: List[str], target: float, field: st
     db_batch_upsert_overrides(updates)
 
     # Rebuild forward demand index + recomm for affected SKUs so recomm stays consistent
-    if field == "written_sales_units":
+    # Both units and dollars edits change effective demand (dollars → back-calc units via _recalc)
+    if field in ("written_sales_units", "written_sales_dollars"):
         _rebuild_fwd_demand_and_recomm(hcs, channels)
 
     return len(planning_rows)
