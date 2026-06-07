@@ -663,6 +663,7 @@ def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = 
 
 def reset_overrides():
     db_clear_overrides()
+    _reset_fwd_demand_and_recomm()   # restore index + WP_DATA recomm to baseline
 
 
 def restore_snapshot(snap_id: int) -> bool:
@@ -769,6 +770,43 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
                     hc, r["channel"], r["current_week"],
                     r["bop_units"], r["on_order_placed_total_unit"],
                 )
+
+
+def _reset_fwd_demand_and_recomm():
+    """Rebuild _FORWARD_DEMAND_INDEX from original WP_DATA units (no planning overrides)
+    and recompute WP_DATA recomm_receipt_units.  Called after reset_overrides() so recomm
+    snaps back to baseline.  Respects persisted SKU settings (case pack, lead time etc.)."""
+    wk_pos = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
+
+    # WP_DATA written_sales_units are always original — overrides only live in DB / _recalc,
+    # never mutated in-place on WP_DATA rows.
+    demand_map: Dict[tuple, int] = {
+        (r["hierarchy_code"], r["channel"], r["current_week"]): r["written_sales_units"]
+        for r in WP_DATA
+    }
+
+    for h in HIERARCHIES:
+        hc = h["hierarchy_code"]
+        m  = get_effective_metrics(hc)   # honours persisted SKU settings
+        look_ahead = m["lead_time_weeks"] + m["safety_weeks"]
+        if look_ahead <= 0:
+            continue
+        for ch in CHANNELS:
+            for wk in FISCAL_WEEKS:
+                idx = wk_pos[wk]
+                future_wks = FISCAL_WEEKS[idx + 1: idx + 1 + look_ahead]
+                _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(
+                    demand_map.get((hc, ch, fw), 0) for fw in future_wks
+                )
+
+    for r in WP_DATA:
+        if r["actualised"] or r.get("is_ongoing"):
+            r["recomm_receipt_units"] = 0
+        else:
+            r["recomm_receipt_units"] = _compute_recomm_receipt(
+                r["hierarchy_code"], r["channel"], r["current_week"],
+                r["bop_units"], r["on_order_placed_total_unit"],
+            )
 
 
 def apply_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> int:
