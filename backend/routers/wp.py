@@ -10,7 +10,7 @@ from dummy_data import (
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
 
-EDITABLE_FIELDS = {"written_sales_units", "written_sales_dollars", "on_order_placed_total_unit"}
+EDITABLE_FIELDS = {"written_sales_units", "written_sales_dollars", "on_order_placed_total_unit", "written_dr_perc"}
 
 
 # ── Filters ───────────────────────────────────────────────────────────────────
@@ -220,13 +220,16 @@ class EditRequest(BaseModel):
     channel: str
     field: str
     value: float = Field(ge=0, description="Value must be non-negative")
+    mode: Optional[str] = None  # "hold_units" or "hold_dollars" — only used for written_dr_perc edits
 
 
 @router.put("/row")
 def edit_row(body: EditRequest):
     if body.field not in EDITABLE_FIELDS:
         raise HTTPException(400, f"'{body.field}' is not editable. Allowed: {EDITABLE_FIELDS}")
-    result = apply_edit(body.hierarchy_code, body.current_week, body.channel, body.field, body.value)
+    if body.field == "written_dr_perc" and body.value > 1:
+        raise HTTPException(400, "written_dr_perc must be between 0 and 1 (e.g. 0.15 for 15%)")
+    result = apply_edit(body.hierarchy_code, body.current_week, body.channel, body.field, body.value, body.mode)
     if not result:
         raise HTTPException(404, "Row not found")
     return result

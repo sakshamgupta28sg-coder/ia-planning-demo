@@ -14,7 +14,8 @@ type WPRow = {
   hierarchy_code: number; current_week: number; channel: string;
   written_sales_units: number; written_sales_dollars: number; written_sales_cost: number;
   written_gm_dollar: number; written_gm_perc: number;
-  written_aur: number; written_auc: number;
+  written_aur: number; written_auc: number; written_air: number;
+  written_dr_perc: number; written_discount_dollars: number;
   bop_units: number; eop_units: number;
   total_receipt_units: number; recomm_receipt_units: number;
   on_order_placed_total_unit: number; on_order_unplaced_total_unit: number;
@@ -227,6 +228,7 @@ export default function WPPage() {
   const [topDownField, setTopDownField] = useState<"written_sales_units" | "written_sales_dollars">("written_sales_units");
   const [topDownLoading, setTopDownLoading] = useState(false);
   const [skuSettings, setSkuSettings] = useState<Record<number, SKUSetting>>({});
+  const [discPctMode, setDiscPctMode] = useState<"hold_units" | "hold_dollars">("hold_units");
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
@@ -288,11 +290,11 @@ export default function WPPage() {
     );
   }
 
-  async function handleEdit(hc: number, channel: string, week: number, field: string, value: number) {
+  async function handleEdit(hc: number, channel: string, week: number, field: string, value: number, mode?: string) {
     if (!canEdit) return;
     setEditError("");
     try {
-      const updated = await editWPRow({ hierarchy_code: hc, current_week: week, channel, field, value });
+      const updated = await editWPRow({ hierarchy_code: hc, current_week: week, channel, field, value, mode });
       setRows((prev) =>
         prev.map((r) =>
           r.current_week === week && r.hierarchy_code === hc && r.channel === channel
@@ -906,6 +908,34 @@ export default function WPPage() {
           </div>
         )}
 
+        {/* Disc% edit mode toggle */}
+        {canEdit && activeTab === "plan" && (
+          <div className="px-4 py-2 border-b border-slate-700 flex flex-wrap items-center gap-2 bg-slate-800/30">
+            <span className="text-xs text-slate-400 font-medium">% Disc edit:</span>
+            <div className="flex rounded overflow-hidden border border-slate-600 text-xs">
+              <button
+                onClick={() => setDiscPctMode("hold_units")}
+                className={`px-3 py-1 transition-colors ${discPctMode === "hold_units" ? "bg-violet-700 text-white" : "bg-slate-800 text-slate-400 hover:text-white"}`}
+                title="Disc% edit keeps units fixed — Sales $ adjusts"
+              >
+                Hold Units
+              </button>
+              <button
+                onClick={() => setDiscPctMode("hold_dollars")}
+                className={`px-3 py-1 transition-colors border-l border-slate-600 ${discPctMode === "hold_dollars" ? "bg-violet-700 text-white" : "bg-slate-800 text-slate-400 hover:text-white"}`}
+                title="Disc% edit keeps Sales $ fixed — Units back-calculate"
+              >
+                Hold $
+              </button>
+            </div>
+            <span className="text-[10px] text-slate-600">
+              {discPctMode === "hold_units"
+                ? "When Disc% changes → Units stay, Sales $ recalculates"
+                : "When Disc% changes → Sales $ stays, Units back-calculates"}
+            </span>
+          </div>
+        )}
+
         {!canEdit ? (
           <p className="text-xs text-slate-500 px-4 py-4">
             Select at least 1 product and 1 channel above to view and edit weekly values.
@@ -922,7 +952,8 @@ export default function WPPage() {
                 {activeTab === "plan" && [
                   { l: "Week", left: true }, { l: "Product", left: true }, { l: "Channel", left: true },
                   { l: "Sales U ✎", edit: true }, { l: "Sales $ ✎", edit: true },
-                  { l: "AUC" }, { l: "AUR" }, { l: "GM $" }, { l: "GM %" },
+                  { l: "List Price (AIR)" }, { l: "Disc% ✎", edit: true }, { l: "Disc $" }, { l: "AUR" },
+                  { l: "AUC" }, { l: "GM $" }, { l: "GM %" },
                   { l: "OO Placed ✎", edit: true }, { l: "BOP" }, { l: "EOP" },
                   { l: "WOS" }, { l: "Recomm Rcpt" },
                 ].map((h) => (
@@ -993,8 +1024,33 @@ export default function WPPage() {
                         <EditableNumber value={r.written_sales_dollars} isModified={r._modified} isInteger={false} locked={locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "written_sales_dollars", v)} />
                       </td>
+                      {/* Pricing block: AIR → Disc% → Disc$ → AUR */}
+                      <td className="px-3 py-1.5 text-right text-slate-400" title="Unit List Price (from input files)">{r.written_air.toFixed(2)}</td>
+                      <td className="px-3 py-1.5 text-right">
+                        {locked ? (
+                          <span className="text-slate-600">{pct(r.written_dr_perc)}<span className="ml-0.5 text-[9px]">🔒</span></span>
+                        ) : (
+                          <span
+                            title={`Disc% — Click to edit\nMode: ${discPctMode === "hold_units" ? "Hold Units ($ recalcs)" : "Hold $ (Units back-calc)"}`}
+                            className={`cursor-pointer rounded px-1 py-0.5 hover:bg-slate-600 transition-colors select-none ${r._modified ? "text-amber-300 font-semibold" : "text-blue-300"}`}
+                            onClick={() => {
+                              const input = prompt(
+                                `Disc% for wk ${r.current_week}\nMode: ${discPctMode === "hold_units" ? "Hold Units" : "Hold $"}\nCurrent: ${(r.written_dr_perc * 100).toFixed(1)}%\nEnter new % (0–100):`,
+                                (r.written_dr_perc * 100).toFixed(1)
+                              );
+                              if (input === null) return;
+                              const pctVal = parseFloat(input);
+                              if (isNaN(pctVal) || pctVal < 0 || pctVal > 100) return;
+                              handleEdit(r.hierarchy_code, r.channel, r.current_week, "written_dr_perc", pctVal / 100, discPctMode);
+                            }}
+                          >
+                            {pct(r.written_dr_perc)}<span className="ml-0.5 text-slate-500 text-[9px]">✎</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5 text-right text-orange-300" title="Discount $ = Units × AIR × Disc%">{fmtD(r.written_discount_dollars)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-300" title="AUR = AIR × (1 − Disc%)">{r.written_aur.toFixed(2)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{r.written_auc.toFixed(2)}</td>
-                      <td className="px-3 py-1.5 text-right text-slate-400">{r.written_aur.toFixed(2)}</td>
                       <td className={`px-3 py-1.5 text-right ${r.written_gm_dollar >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtD(r.written_gm_dollar)}</td>
                       <td className={`px-3 py-1.5 text-right ${r.written_gm_perc >= 0.5 ? "text-emerald-400" : r.written_gm_perc >= 0.3 ? "text-slate-300" : "text-amber-400"}`}>{pct(r.written_gm_perc)}</td>
                       <td className="px-3 py-1.5 text-right">

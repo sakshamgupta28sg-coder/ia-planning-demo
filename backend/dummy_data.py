@@ -165,6 +165,7 @@ def generate_wp_data() -> List[Dict]:
                 md_units   = round(units * dr)
                 md_dollars = round(md_units * m["air"] * dr, 2)
 
+                discount_dollars = round(units * m["air"] * dr, 2)
                 demand_index[(hc, ch, wk)] = units
                 rows.append({
                     "hierarchy_code": hc,
@@ -180,6 +181,7 @@ def generate_wp_data() -> List[Dict]:
                     "written_auc": m["auc"],
                     "written_air": m["air"],
                     "written_dr_perc": dr,
+                    "written_discount_dollars": discount_dollars,
                     "written_gm_dollar": gm_dollar,
                     "written_gm_perc": gm_perc,
                     "bop_units": current_bop,
@@ -404,42 +406,76 @@ def _ovr_key(hc: int, wk: int, ch: str) -> str:
 
 
 def _recalc(row: Dict, ovr: Dict) -> Dict:
+    """Apply override values and cascade all dependent fields.
+
+    Four editing scenarios (AIR always fixed as Unit List Price):
+      1. Units edited    → keep disc%, AIR; recalc AUR, Sales $, Disc $
+      2. Sales $ edited  → keep disc%, AIR; back-calc Units; recalc AUR, Disc $
+      3. Disc% edited (hold_units) → keep Units, AIR; recalc AUR, Sales $, Disc $
+      4. Disc% edited (hold_dollars) → keep Sales $, AIR; back-calc Units; recalc AUR, Disc $
+    """
     row = dict(row)
     for field, val in ovr.items():
         row[field] = val
 
-    # AUC and AUR are always base values (never overridden)
-    aur   = row["written_aur"]
-    auc   = row["written_auc"]
-    units = row["written_sales_units"]
-
-    # Use _last_edited to know which field was the trigger (handles the case
-    # where both units and dollars exist in ovr from sequential edits)
+    air     = row["written_air"]   # Unit List Price — always from input files, never overridden
+    auc     = row["written_auc"]   # Cost — always from input files
     trigger = ovr.get("_last_edited")
+    mode    = ovr.get("_edit_mode", "hold_units")  # disc% edit anchor
 
-    if trigger == "written_sales_units" or (
-        "written_sales_units" in ovr and "written_sales_dollars" not in ovr
-    ):
-        # Units edited → derive Sales $
-        row["written_sales_dollars"] = round(aur * units, 2)
-    elif trigger == "written_sales_dollars" or (
-        "written_sales_dollars" in ovr and "written_sales_units" not in ovr
-    ):
-        # Sales $ edited → back-calculate units (AUR stays fixed)
-        if aur > 0:
-            units = round(row["written_sales_dollars"] / aur)
-            row["written_sales_units"] = units
+    # ── Scenario 1: Units edited ────────────────────────────────────────────────
+    if trigger == "written_sales_units":
+        units = row["written_sales_units"]
+        dr    = row["written_dr_perc"]
+        aur   = round(air * (1 - dr), 2)
+        row["written_aur"]               = aur
+        row["written_sales_dollars"]     = round(aur * units, 2)
+        row["written_discount_dollars"]  = round(units * air * dr, 2)
 
-    if "on_order_placed_total_unit" in ovr:
+    # ── Scenario 2: Sales $ edited ──────────────────────────────────────────────
+    elif trigger == "written_sales_dollars":
+        dr  = row["written_dr_perc"]
+        aur = round(air * (1 - dr), 2)
+        row["written_aur"] = aur
+        units = round(row["written_sales_dollars"] / aur) if aur > 0 else 0
+        row["written_sales_units"]       = units
+        row["written_discount_dollars"]  = round(units * air * dr, 2)
+
+    # ── Scenarios 3 & 4: Disc% edited ──────────────────────────────────────────
+    elif trigger == "written_dr_perc":
+        dr  = row["written_dr_perc"]
+        aur = round(air * (1 - dr), 2)
+        row["written_aur"] = aur
+        if mode == "hold_units":
+            # Scenario 3: units fixed, sales $ adjusts
+            units = row["written_sales_units"]
+            row["written_sales_dollars"]    = round(aur * units, 2)
+            row["written_discount_dollars"] = round(units * air * dr, 2)
+        else:
+            # Scenario 4: sales $ fixed, units back-calc
+            dollars = row["written_sales_dollars"]
+            units   = round(dollars / aur) if aur > 0 else 0
+            row["written_sales_units"]      = units
+            row["written_discount_dollars"] = round(units * air * dr, 2)
+
+    # ── OO placed: update total receipts ───────────────────────────────────────
+    elif trigger == "on_order_placed_total_unit":
         row["total_receipt_units"] = row["on_order_placed_total_unit"] + row["on_order_unplaced_total_unit"]
 
-    # EOP = BOP - Sales Units + Total Receipts (consistent with initial data generation)
-    row["eop_units"] = max(0, row["bop_units"] - units + row["total_receipt_units"])
+    # Sync units from row (may have been back-calculated above)
+    units = row["written_sales_units"]
+    auc   = row["written_auc"]
 
+    # ── Derived cost / GM ──────────────────────────────────────────────────────
     row["written_sales_cost"] = round(units * auc, 2)
     row["written_gm_dollar"]  = round(row["written_sales_dollars"] - row["written_sales_cost"], 2)
     if row["written_sales_dollars"] > 0:
         row["written_gm_perc"] = round(row["written_gm_dollar"] / row["written_sales_dollars"], 4)
+
+    # ── Inventory ──────────────────────────────────────────────────────────────
+    row["eop_units"] = max(0, row["bop_units"] - units + row["total_receipt_units"])
+
+    # ── Recomm receipt (planning weeks only) ───────────────────────────────────
     if not row.get("actualised") and not row.get("is_ongoing"):
         row["recomm_receipt_units"] = _compute_recomm_receipt(
             row["hierarchy_code"], row["channel"], row["current_week"],
@@ -447,7 +483,8 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
         )
     else:
         row["recomm_receipt_units"] = 0
-    # Re-derive analytics fields after override
+
+    # ── Analytics ──────────────────────────────────────────────────────────────
     row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
     avail = row["bop_units"] + row["total_receipt_units"]
     row["sell_through_perc"] = round(row["actual_sales_units"] / avail, 4) if avail > 0 and row.get("actualised") else 0.0
@@ -486,6 +523,7 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
                 "written_auc":               r["written_auc"],
                 "written_air":               r["written_air"],
                 "written_dr_perc":           r.get("written_dr_perc", 0),
+                "written_discount_dollars":  0.0,
                 "written_gm_perc":           0.0,
                 "bop_units":                 0,
                 "eop_units":                 0,
@@ -522,6 +560,7 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         b["actual_sales_cost"]            = round(b["actual_sales_cost"]    + r["actual_sales_cost"], 2)
         b["markdown_units"]              += r["markdown_units"]
         b["markdown_dollars"]             = round(b["markdown_dollars"]     + r["markdown_dollars"], 2)
+        b["written_discount_dollars"]     = round(b["written_discount_dollars"] + r.get("written_discount_dollars", 0.0), 2)
 
     # ── LY / LLY lookups (keyed same way as buckets) ─────────────────────────────
     _ly: Dict[str, Dict] = {}
@@ -541,11 +580,14 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         _lly[k]["lly_dollars"] = round(_lly[k]["lly_dollars"] + r.get("lly_dollars", 0.0), 2)
 
     for key, b in buckets.items():
-        # AUR / GM%
+        # AUR / GM% / implied Disc%
         if b["written_sales_units"] > 0:
             b["written_aur"] = round(b["written_sales_dollars"] / b["written_sales_units"], 2)
         if b["written_sales_dollars"] > 0:
             b["written_gm_perc"] = round(b["written_gm_dollar"] / b["written_sales_dollars"], 4)
+        # Derive disc% from AUR/AIR (consistent after any overrides)
+        if b["written_air"] > 0:
+            b["written_dr_perc"] = round(max(0.0, 1 - b["written_aur"] / b["written_air"]), 4)
 
         # WOS (Weeks of Supply)
         b["wos"] = round(b["eop_units"] / b["written_sales_units"], 2) if b["written_sales_units"] > 0 else 99.0
@@ -593,17 +635,21 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
 
-def apply_edit(hc: int, wk: int, ch: str, field: str, value: float) -> Dict:
+def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = None) -> Dict:
     key = _ovr_key(hc, wk, ch)
     overrides = db_get_overrides()
     entry = overrides.get(key, {})
-    # Round unit fields to integers, dollar fields to 2 dp (OBS-02)
+    # Round appropriately per field type
     if field in ("written_sales_units", "on_order_placed_total_unit"):
         value = float(round(value))
+    elif field == "written_dr_perc":
+        value = round(min(max(value, 0.0), 1.0), 4)  # clamp 0–100%, 4 dp
     else:
         value = round(value, 2)
     entry[field] = value
-    entry["_last_edited"] = field   # track which field was most recently changed
+    entry["_last_edited"] = field
+    if field == "written_dr_perc" and mode in ("hold_units", "hold_dollars"):
+        entry["_edit_mode"] = mode
     db_upsert_override(key, entry)
     rows = get_agg_rows(hc, ch)
     return next((r for r in rows if r["current_week"] == wk), None)

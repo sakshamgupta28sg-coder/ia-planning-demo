@@ -28,6 +28,7 @@ export async function editWPRow(body: {
   channel: string;
   field: string;
   value: number;
+  mode?: string;
 }) {
   const res = await fetch(`${BASE}/wp/row`, {
     method: "PUT",
