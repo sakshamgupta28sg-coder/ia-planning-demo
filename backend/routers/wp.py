@@ -107,7 +107,7 @@ def get_wp_by_week(
             w["written_aur"] = round(w["written_sales_dollars"] / w["written_sales_units"], 2)
         if w["written_sales_dollars"] > 0:
             w["written_gm_perc"] = round(w["written_gm_dollar"] / w["written_sales_dollars"], 4)
-        w["wos"] = round(w["eop_units"] / w["written_sales_units"], 2) if w["written_sales_units"] > 0 else 99.0
+        w["wos"] = None if w.get("actualised") else (round(w["eop_units"] / w["written_sales_units"], 2) if w["written_sales_units"] > 0 else 99.0)
         avail = w["bop_units"] + w["total_receipt_units"]
         w["sell_through_perc"] = round(w["actual_sales_units"] / avail, 4) if avail > 0 and w.get("actualised") else 0.0
         if w.get("actualised") and w["written_sales_units"] > 0:

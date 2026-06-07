@@ -538,15 +538,17 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     else:
         row["recomm_receipt_units"] = 0
 
-    # ── WOS — forward avg for planning, simple for locked weeks ───────────────
-    if not row.get("actualised") and not row.get("is_ongoing"):
+    # ── WOS — forward avg for planning; null for actualized (no buying decisions) ─
+    if row.get("actualised"):
+        row["wos"] = None
+    elif row.get("is_ongoing"):
+        row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
+    else:
         _m = get_effective_metrics(row["hierarchy_code"])
         _la = _m["lead_time_weeks"] + _m["safety_weeks"]
         _fwd = _FORWARD_DEMAND_INDEX.get((row["hierarchy_code"], row["channel"], row["current_week"]), 0)
         _fwd_avg = _fwd / _la if _la > 0 else 0
         row["wos"] = round(row["eop_units"] / _fwd_avg, 2) if _fwd_avg > 0 else 99.0
-    else:
-        row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
     avail = row["bop_units"] + row["total_receipt_units"]
     row["sell_through_perc"] = round(row["actual_sales_units"] / avail, 4) if avail > 0 and row.get("actualised") else 0.0
     row["otb_units"]   = 0
@@ -707,12 +709,11 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
 
         for b in stream:
             if b.get("actualised"):
-                # Historical: don't touch BOP; update trailing window; compute WOS
+                # Historical: WOS not meaningful for past weeks — no buying decisions.
                 actual_window.append(b.get("actual_sales_units", 0))
                 if len(actual_window) > 4:
                     actual_window.pop(0)
-                trail_avg = sum(actual_window) / len(actual_window) if actual_window else 0
-                b["wos"] = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else 99.0
+                b["wos"] = None
                 prev_eop = b["eop_units"]
                 continue
 

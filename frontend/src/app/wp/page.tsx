@@ -24,7 +24,7 @@ type WPRow = {
   actual_sales_units: number; actual_sales_dollars: number; actual_sales_cost: number;
   variance_units: number | null; variance_dollars: number | null; variance_units_perc: number | null;
   // Inventory analytics
-  sell_through_perc: number; wos: number;
+  sell_through_perc: number; wos: number | null;
   otb_units: number; otb_dollars: number;
   // LY
   ly_sales_units: number; ly_sales_dollars: number;
@@ -518,7 +518,8 @@ export default function WPPage() {
     if (v < -0.05) return "text-red-400";     // TY below LY
     return "text-slate-300";
   }
-  function wosColor(w: number) {
+  function wosColor(w: number | null) {
+    if (w === null || w === undefined) return "text-slate-500";
     if (w < 2)  return "text-red-400 font-semibold";
     if (w < 4)  return "text-amber-400";
     if (w > 16) return "text-red-400";
@@ -1160,7 +1161,7 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right">{fmtU(r.bop_units)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-400" title="Total receipts inbound this week">{fmtU(r.total_receipt_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
-                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos)}`}>{r.wos}</td>
+                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos)}`}>{r.wos ?? "—"}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
                     </>}
 
@@ -1191,7 +1192,7 @@ export default function WPPage() {
                     {activeTab === "inventory" && <>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.bop_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
-                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos)}`}>{r.wos}</td>
+                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos)}`}>{r.wos ?? "—"}</td>
                       <td className="px-3 py-1.5 text-right text-cyan-400">{fmtU(r.otb_units)}</td>
                       <td className="px-3 py-1.5 text-right text-cyan-400">{fmtD(r.otb_dollars)}</td>
                       <td className="px-3 py-1.5 text-right">
