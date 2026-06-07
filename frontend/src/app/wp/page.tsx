@@ -888,13 +888,18 @@ export default function WPPage() {
               placeholder="Total target…"
               className="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded px-2 py-1 w-32 outline-none focus:border-emerald-500"
             />
-            <button
-              onClick={() => setTopDownField((f) => f === "written_sales_units" ? "written_sales_dollars" : "written_sales_units")}
-              className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-2.5 py-1 rounded border border-slate-600 transition-colors min-w-[52px]"
-              title="Toggle between units and dollars"
-            >
-              {topDownField === "written_sales_units" ? "Units" : "$"}
-            </button>
+            <div className="flex rounded overflow-hidden border border-slate-600 text-xs">
+              <button
+                onClick={() => setTopDownField("written_sales_units")}
+                className={`px-3 py-1 transition-colors ${topDownField === "written_sales_units" ? "bg-emerald-700 text-white" : "bg-slate-800 text-slate-400 hover:text-white"}`}
+                title="Distribute as total units"
+              >Units</button>
+              <button
+                onClick={() => setTopDownField("written_sales_dollars")}
+                className={`px-3 py-1 transition-colors border-l border-slate-600 ${topDownField === "written_sales_dollars" ? "bg-emerald-700 text-white" : "bg-slate-800 text-slate-400 hover:text-white"}`}
+                title="Distribute as total sales dollars"
+              >$</button>
+            </div>
             <button
               onClick={handleTopDown}
               disabled={!topDownTarget.trim() || topDownLoading}

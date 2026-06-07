@@ -651,6 +651,11 @@ def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = 
     if field == "written_dr_perc" and mode in ("hold_units", "hold_dollars"):
         entry["_edit_mode"] = mode
     db_upsert_override(key, entry)
+
+    # If units changed, forward demand for all weeks of this SKU×channel is stale — rebuild
+    if field == "written_sales_units":
+        _rebuild_fwd_demand_and_recomm([hc], [ch])
+
     rows = get_agg_rows(hc, ch)
     return next((r for r in rows if r["current_week"] == wk), None)
 
@@ -694,6 +699,52 @@ def save_snapshot(name: str) -> Dict:
 
 def get_all_snapshots() -> List[Dict]:
     return db_list_snapshots()
+
+
+def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
+    """Rebuild _FORWARD_DEMAND_INDEX from WP_DATA + current overrides for given SKUs,
+    then recompute recomm_receipt_units in WP_DATA for those SKUs.
+
+    Called whenever written_sales_units change (top-down or single-cell edit) so
+    recomm for ALL weeks stays consistent with the updated demand.
+    """
+    _channels = channels if channels is not None else CHANNELS
+    overrides = db_get_overrides()
+    wk_pos = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
+
+    for hc in hcs:
+        m = get_effective_metrics(hc)
+        look_ahead = m["lead_time_weeks"] + m["safety_weeks"]
+        if look_ahead <= 0:
+            continue
+
+        for ch in _channels:
+            # Effective units per week = override value (if set) else WP_DATA value
+            eff_units: Dict[int, int] = {}
+            for r in WP_DATA:
+                if r["hierarchy_code"] != hc or r["channel"] != ch:
+                    continue
+                key = _ovr_key(hc, r["current_week"], ch)
+                ovr = overrides.get(key, {})
+                eff_units[r["current_week"]] = int(ovr.get("written_sales_units", r["written_sales_units"]))
+
+            # Rebuild forward demand entries for all weeks of this SKU×channel
+            for wk in FISCAL_WEEKS:
+                idx = wk_pos[wk]
+                future_wks = FISCAL_WEEKS[idx + 1: idx + 1 + look_ahead]
+                _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(eff_units.get(fw, 0) for fw in future_wks)
+
+        # Rewrite recomm in WP_DATA for this SKU (non-overridden rows serve their value directly)
+        for r in WP_DATA:
+            if r["hierarchy_code"] != hc:
+                continue
+            if r["actualised"] or r.get("is_ongoing"):
+                r["recomm_receipt_units"] = 0
+            else:
+                r["recomm_receipt_units"] = _compute_recomm_receipt(
+                    hc, r["channel"], r["current_week"],
+                    r["bop_units"], r["on_order_placed_total_unit"],
+                )
 
 
 def apply_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> int:
@@ -768,4 +819,9 @@ def apply_top_down(hcs: List[int], channels: List[str], target: float, field: st
 
     # One DB transaction for all writes
     db_batch_upsert_overrides(updates)
+
+    # Rebuild forward demand index + recomm for affected SKUs so recomm stays consistent
+    if field == "written_sales_units":
+        _rebuild_fwd_demand_and_recomm(hcs, channels)
+
     return len(planning_rows)
