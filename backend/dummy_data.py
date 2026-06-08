@@ -495,6 +495,99 @@ def recompute_recomm_for_sku(hc: int):
             )
 
 
+def _recalibrate_pass1b(hc: int, channels: List[str] = None):
+    """Re-run Pass 1b receipt calibration for one SKU across given channels.
+
+    Pass 1b normally runs once at startup using base HIERARCHY_METRICS.  When
+    target_wos changes at runtime (via SKU settings or channel overrides) the
+    planning receipts go stale.  This function re-derives the receipt for every
+    planning week using the current effective target_wos and persists each result
+    as a row-level override so _recalc / stream-walk pick it up immediately —
+    no server restart required.
+
+    Sales overrides (written_sales_units / written_sales_dollars) are respected:
+    the effective unit count for each week is read from existing overrides so the
+    BOP→EOP chain stays consistent with whatever the planner has already edited.
+
+    Manually-edited OO Placed rows are intentionally overwritten — recalibration
+    resets receipt quantities to the new target; the planner can re-edit afterwards.
+    """
+    _channels = channels if channels is not None else CHANNELS
+    m  = get_effective_metrics(hc)
+    cp = m["case_pack"]
+
+    overrides = db_get_overrides()
+    # index WP_DATA rows for fast lookup
+    row_lkp: Dict[tuple, Dict] = {
+        (r["hierarchy_code"], r["channel"], r["current_week"]): r
+        for r in WP_DATA if r["hierarchy_code"] == hc
+    }
+
+    updates: Dict[str, Dict] = {}
+
+    for ch in _channels:
+        target_wos_val = get_target_wos(hc, ch)
+
+        # Start chain from ongoing week's EOP (same as Pass 1b in generate_wp_data)
+        ongoing = row_lkp.get((hc, ch, CURRENT_WEEK))
+        prev_eop = ongoing["eop_units"] if ongoing else 0
+
+        for wk in FISCAL_WEEKS:
+            r = row_lkp.get((hc, ch, wk))
+            if not r:
+                continue
+            if r.get("actualised"):
+                prev_eop = r["eop_units"]
+                continue
+            if r.get("is_ongoing"):
+                prev_eop = r["eop_units"]
+                continue
+
+            # ── Planning week: derive effective sales (honour existing overrides) ──
+            key = _ovr_key(hc, wk, ch)
+            ovr = overrides.get(key, {})
+            trigger = ovr.get("_last_edited")
+
+            if trigger == "written_sales_units" and "written_sales_units" in ovr:
+                sales = int(ovr["written_sales_units"])
+            elif trigger == "written_sales_dollars" and "written_sales_dollars" in ovr:
+                air = r["written_air"]
+                dr  = float(ovr.get("written_dr_perc", r["written_dr_perc"]))
+                aur = round(air * (1 - dr), 2)
+                sales = int(round(ovr["written_sales_dollars"] / aur)) if aur > 0 else 0
+            else:
+                sales = r["written_sales_units"]
+
+            bop         = prev_eop
+            eop_no_rcpt = max(0, bop - sales)
+
+            wos_dem   = _WOS_DEMAND_INDEX.get((hc, ch, wk), 0)
+            fwd_avg8  = wos_dem / WOS_WINDOW if WOS_WINDOW > 0 else 0
+            target_eop = round(target_wos_val * fwd_avg8)
+
+            if target_eop <= eop_no_rcpt:
+                receipt = 0
+            else:
+                raw     = target_eop - eop_no_rcpt
+                receipt = int(_math.ceil(raw / cp) * cp) if cp > 0 else int(raw)
+
+            eop      = eop_no_rcpt + receipt
+            prev_eop = eop
+
+            # Persist as override — _recalc maps _last_edited=on_order_placed_total_unit
+            # → total_receipt_units = on_order_placed_total_unit, then recalculates EOP.
+            entry = dict(ovr)
+            entry["on_order_placed_total_unit"] = float(receipt)
+            entry["_last_edited"] = "on_order_placed_total_unit"
+            updates[key] = entry
+
+    if updates:
+        db_batch_upsert_overrides(updates)
+
+    # Pipeline index is now stale (OO Placed changed) — rebuild + recompute recomm.
+    _rebuild_pipeline_and_recomm([hc], _channels)
+
+
 def update_sku_setting(hc: int, field: str, value) -> Dict:
     """Update one editable SKU field, persist to DB, recompute recomm. Returns effective metrics."""
     global _SKU_SETTINGS_OVERRIDES
@@ -505,6 +598,10 @@ def update_sku_setting(hc: int, field: str, value) -> Dict:
     db_upsert_sku_setting(hc, current)
     _SKU_SETTINGS_OVERRIDES[hc] = current
     recompute_recomm_for_sku(hc)
+    # target_wos change → re-calibrate Pass 1b receipts for all channels so
+    # planning receipts reflect the new target without a server restart.
+    if field == "target_wos":
+        _recalibrate_pass1b(hc)
     return get_effective_metrics(hc)
 
 
@@ -521,11 +618,15 @@ _load_sku_settings()
 
 
 def update_channel_target_wos(hc: int, channel: str, value: int) -> int:
-    """Persist target WOS for one SKU×channel, recompute recomm."""
+    """Persist target WOS for one SKU×channel, re-calibrate Pass 1b receipts, recompute recomm."""
     global _CHANNEL_TARGET_WOS
     key = f"{hc}_{channel}"
     _CHANNEL_TARGET_WOS[key] = int(value)
     db_upsert_channel_setting(key, {"target_wos": int(value)})
+    # Re-run Pass 1b for this channel only — planning receipts now target the new WOS.
+    _recalibrate_pass1b(hc, [channel])
+    # _recalibrate_pass1b already rebuilds pipeline + recomm via _rebuild_pipeline_and_recomm;
+    # also rebuild demand indexes (lead/safety unchanged but WOS denominator affects target_eop).
     recompute_recomm_for_sku(hc)
     return int(value)
 
