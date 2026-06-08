@@ -4,7 +4,7 @@ from typing import Optional
 from dummy_data import (
     WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, CURRENT_WEEK, CATEGORIES,
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
-    get_all_snapshots, apply_top_down, preview_top_down,
+    rename_snapshot, get_all_snapshots, apply_top_down, preview_top_down,
     get_effective_metrics, update_sku_setting, EDITABLE_SKU_FIELDS,
     get_target_wos, update_channel_target_wos, _CHANNEL_TARGET_WOS,
     clear_single_override, accept_recomm_receipts,
@@ -461,3 +461,17 @@ def remove_snapshot(snap_id: int):
     if not ok:
         raise HTTPException(404, "Snapshot not found")
     return {"deleted": snap_id}
+
+
+class SnapshotRenameRequest(BaseModel):
+    name: str
+
+
+@router.patch("/snapshots/{snap_id}")
+def patch_snapshot(snap_id: int, body: SnapshotRenameRequest):
+    if not body.name.strip():
+        raise HTTPException(400, "Name cannot be empty")
+    ok = rename_snapshot(snap_id, body.name)
+    if not ok:
+        raise HTTPException(404, "Snapshot not found")
+    return {"id": snap_id, "name": body.name.strip()}

@@ -436,7 +436,7 @@ from database import (
     init_db,
     db_get_overrides, db_upsert_override, db_clear_overrides, db_replace_overrides,
     db_batch_upsert_overrides,
-    db_list_snapshots, db_get_snapshot, db_insert_snapshot, db_delete_snapshot,
+    db_list_snapshots, db_get_snapshot, db_insert_snapshot, db_delete_snapshot, db_rename_snapshot,
     db_get_all_sku_settings, db_upsert_sku_setting,
     db_get_all_channel_settings, db_upsert_channel_setting,
     db_get_all_new_skus, db_get_max_new_sku_hc, db_insert_new_sku, db_delete_new_sku,
@@ -1015,6 +1015,10 @@ def delete_snapshot(snap_id: int) -> bool:
     return db_delete_snapshot(snap_id)
 
 
+def rename_snapshot(snap_id: int, new_name: str) -> bool:
+    return db_rename_snapshot(snap_id, new_name.strip())
+
+
 def save_snapshot(name: str) -> Dict:
     all_rows = get_agg_rows()
     overrides = db_get_overrides()
@@ -1404,10 +1408,17 @@ def compare_snapshots(snap_a_id: int, snap_b_id: int) -> Dict:
 
 
 def get_exceptions_panel() -> List[Dict]:
-    """Return all planning-week rows with exception status (non-ok only),
-    per SKU×channel, with worst week identified — for the exceptions panel."""
+    """Return one row per SKU×channel showing worst exception (non-ok only).
+
+    Groups week-level coverage data into SKU×channel summary rows so the panel
+    shows "N SKUs need attention" not "480 week rows."  Each row carries the
+    worst-coverage week for that combo plus a count of total affected weeks.
+    """
     all_rows = get_agg_rows()
-    result = []
+    severity_order = {"critical": 0, "low": 1, "excess": 2}
+
+    # Classify each planning week
+    raw: List[Dict] = []
     for r in all_rows:
         if r.get("actualised") or r.get("is_ongoing"):
             continue
@@ -1424,21 +1435,37 @@ def get_exceptions_panel() -> List[Dict]:
         elif cov > lt * 3:
             status = "excess"
         else:
-            continue   # ok — skip
-        result.append({
-            "hierarchy_code":  hc,
-            "l2_name":         r.get("l2_name", ""),
-            "channel":         r["channel"],
-            "current_week":    r["current_week"],
+            continue
+        raw.append({
+            "hierarchy_code":   hc,
+            "l2_name":          r.get("l2_name", ""),
+            "channel":          r["channel"],
+            "current_week":     r["current_week"],
             "exception_status": status,
-            "coverage_wks":    round(cov, 1),
-            "lead_time_weeks": lt,
-            "eop_units":       r["eop_units"],
-            "wos":             r.get("wos"),
+            "coverage_wks":     round(cov, 1),
+            "lead_time_weeks":  lt,
+            "eop_units":        r["eop_units"],
+            "wos":              r.get("wos"),
         })
-    # Sort: critical first, then low, then excess; within each by week
-    order = {"critical": 0, "low": 1, "excess": 2}
-    return sorted(result, key=lambda x: (order[x["exception_status"]], x["current_week"]))
+
+    # Group by SKU×channel: surface worst week, count total affected
+    by_combo: Dict[tuple, Dict] = {}
+    for row in raw:
+        key = (row["hierarchy_code"], row["channel"])
+        if key not in by_combo:
+            by_combo[key] = {**row, "affected_weeks": 1}
+        else:
+            existing = by_combo[key]
+            existing["affected_weeks"] += 1
+            # Escalate to worse severity; within same severity pick lower coverage
+            if (severity_order[row["exception_status"]] < severity_order[existing["exception_status"]] or
+                    (row["exception_status"] == existing["exception_status"] and
+                     row["coverage_wks"] < existing["coverage_wks"])):
+                count = existing["affected_weeks"]
+                by_combo[key] = {**row, "affected_weeks": count}
+
+    result = list(by_combo.values())
+    return sorted(result, key=lambda x: (severity_order[x["exception_status"]], x["coverage_wks"]))
 
 
 def get_budget() -> Dict:

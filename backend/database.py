@@ -231,6 +231,14 @@ def db_delete_snapshot(snap_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def db_rename_snapshot(snap_id: int, new_name: str) -> bool:
+    """Rename a snapshot. Returns True if a row was updated."""
+    with _conn() as conn:
+        cur = conn.execute("UPDATE snapshots SET name = ? WHERE id = ?", (new_name, snap_id))
+        conn.commit()
+    return cur.rowcount > 0
+
+
 def db_batch_upsert_overrides(updates: Dict[str, Dict]):
     """Insert or replace multiple override entries in a single transaction (fast path)."""
     with _conn() as conn:

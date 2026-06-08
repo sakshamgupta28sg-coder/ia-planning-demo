@@ -221,3 +221,13 @@ export async function fetchSeasonProgress() {
   const res = await fetch(`${BASE}/wp/season-progress`, { cache: "no-store" });
   return res.json();
 }
+
+export async function renameSnapshotAPI(snap_id: number, name: string) {
+  const res = await fetch(`${BASE}/wp/snapshots/${snap_id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

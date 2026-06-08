@@ -7,7 +7,7 @@ import {
   fetchTargetWOS, updateTargetWOS,
   undoRowOverride, acceptRecomm,
   compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget, updateBudget,
-  fetchSeasonProgress,
+  fetchSeasonProgress, renameSnapshotAPI,
 } from "@/lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -59,6 +59,7 @@ type ExceptionRow = {
   hierarchy_code: number; l2_name: string; channel: string; current_week: number;
   exception_status: "critical" | "low" | "excess"; coverage_wks: number;
   lead_time_weeks: number; eop_units: number; wos: number | null;
+  affected_weeks: number;
 };
 type AuditEntry = {
   id: number; timestamp: string; hierarchy_code: number; channel: string;
@@ -314,6 +315,26 @@ function Toast({ message, type }: { message: string; type: "success" | "error" }
   );
 }
 
+// ── Confirm Dialog ────────────────────────────────────────────────────────────
+function ConfirmDialog({ title, detail, confirmLabel = "Confirm", onConfirm, onCancel }: {
+  title: string; detail?: string; confirmLabel?: string;
+  onConfirm: () => void; onCancel: () => void;
+}) {
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/60 z-[200]" onClick={onCancel} />
+      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[201] bg-slate-900 border border-slate-700 rounded-xl p-6 w-96 shadow-2xl">
+        <h3 className="font-semibold text-white mb-2">{title}</h3>
+        {detail && <p className="text-xs text-slate-400 mb-4">{detail}</p>}
+        <div className="flex gap-3 justify-end mt-4">
+          <button onClick={onCancel} className="text-sm bg-slate-700 hover:bg-slate-600 text-slate-300 px-4 py-2 rounded transition-colors">Cancel</button>
+          <button onClick={() => { onConfirm(); onCancel(); }} className="text-sm bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded font-medium transition-colors">{confirmLabel}</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Delta badge ───────────────────────────────────────────────────────────────
 function Delta({ current, baseline, isDollar = false }: { current: number; baseline: number; isDollar?: boolean }) {
   const diff = current - baseline;
@@ -372,6 +393,11 @@ export default function WPPage() {
   const [seasonProgress, setSeasonProgress] = useState<SeasonProgress | null>(null);
   // Exception panel: show top-10 by default
   const [showAllExceptions, setShowAllExceptions] = useState(false);
+  // Confirm dialog
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; detail?: string; confirmLabel?: string; onConfirm: () => void } | null>(null);
+  // Snapshot rename
+  const [renamingSnapId, setRenamingSnapId] = useState<number | null>(null);
+  const [renameInput, setRenameInput] = useState("");
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
@@ -512,22 +538,60 @@ export default function WPPage() {
     setSaving(false);
   }
 
-  async function handleReset() {
+  async function doReset() {
     setResetting(true);
     await resetOverrides();
     await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
     setResetting(false);
   }
 
-  async function handleRestore(id: number) {
-    await restoreSnapshotAPI(id);
-    await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
-    setShowSnapshots(false);
+  function handleReset() {
+    setConfirmDialog({
+      title: "Reset all edits?",
+      detail: "This will undo every change you've made to the plan and return to the original baseline. This cannot be undone.",
+      confirmLabel: "Reset everything",
+      onConfirm: doReset,
+    });
   }
 
-  async function handleDeleteSnapshot(id: number) {
-    await deleteSnapshotAPI(id);
-    setSnapshots((prev) => prev.filter((s) => s.id !== id));
+  function handleRestore(id: number) {
+    const snap = snapshots.find((s) => s.id === id);
+    setConfirmDialog({
+      title: `Restore "${snap?.name ?? "snapshot"}"?`,
+      detail: "Your current plan will be replaced with this snapshot. All unsaved changes will be lost.",
+      confirmLabel: "Restore",
+      onConfirm: async () => {
+        await restoreSnapshotAPI(id);
+        await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
+        setShowSnapshots(false);
+      },
+    });
+  }
+
+  function handleDeleteSnapshot(id: number) {
+    const snap = snapshots.find((s) => s.id === id);
+    setConfirmDialog({
+      title: `Delete "${snap?.name ?? "snapshot"}"?`,
+      detail: "This snapshot will be permanently deleted and cannot be recovered.",
+      confirmLabel: "Delete",
+      onConfirm: async () => {
+        await deleteSnapshotAPI(id);
+        setSnapshots((prev) => prev.filter((s) => s.id !== id));
+      },
+    });
+  }
+
+  async function handleRenameSnapshot(id: number, name: string) {
+    if (!name.trim()) return;
+    try {
+      await renameSnapshotAPI(id, name.trim());
+      setSnapshots((prev) => prev.map((s) => s.id === id ? { ...s, name: name.trim() } : s));
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Rename failed");
+    } finally {
+      setRenamingSnapId(null);
+      setRenameInput("");
+    }
   }
 
   async function handleTopDownPreview() {
@@ -981,25 +1045,32 @@ export default function WPPage() {
             </div>
           ))}
           {/* Season Progress card */}
-          {seasonProgress && (
-            <div className="rounded-lg p-4 border bg-slate-800 border-slate-700">
-              <div className="text-xs text-slate-400 mb-1">Season Pace</div>
-              <div className="text-xl font-bold text-white">{pct(seasonProgress.pct_dollars)}</div>
-              <div className="text-[10px] mt-1 text-slate-400">
-                {fmtD(seasonProgress.actualized_dollars)} actualized
-                <span className="text-slate-600"> of {fmtD(seasonProgress.plan_dollars)}</span>
+          {seasonProgress && (() => {
+            const runRate = seasonProgress.weeks_actualized > 0
+              ? seasonProgress.actualized_dollars / seasonProgress.weeks_actualized : 0;
+            const projectedFY = seasonProgress.actualized_dollars + runRate * seasonProgress.weeks_remaining;
+            const projVsPlan = seasonProgress.plan_dollars > 0 ? projectedFY / seasonProgress.plan_dollars : 0;
+            const onPaceColor = projVsPlan >= 0.95 ? "text-emerald-400" : projVsPlan >= 0.85 ? "text-amber-400" : "text-red-400";
+            return (
+              <div className="rounded-lg p-4 border bg-slate-800 border-slate-700">
+                <div className="text-xs text-slate-400 mb-1">Season Pace</div>
+                <div className="text-xl font-bold text-white">{pct(seasonProgress.pct_dollars)}</div>
+                <div className="text-[10px] mt-1 text-slate-400">
+                  {fmtD(seasonProgress.actualized_dollars)} actualized
+                  <span className="text-slate-600"> of {fmtD(seasonProgress.plan_dollars)}</span>
+                </div>
+                <div className="mt-1.5 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${seasonProgress.pct_dollars > 0.8 ? "bg-emerald-500" : seasonProgress.pct_dollars > 0.5 ? "bg-blue-500" : "bg-slate-500"}`}
+                    style={{ width: `${Math.min(seasonProgress.pct_dollars * 100, 100)}%` }}
+                  />
+                </div>
+                <div className={`text-[10px] mt-1 font-medium ${onPaceColor}`} title="Projected full-year based on current run rate">
+                  On pace → {fmtD(projectedFY)} <span className="font-normal text-slate-500">({pct(projVsPlan)} of plan)</span>
+                </div>
               </div>
-              <div className="mt-1.5 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full ${seasonProgress.pct_dollars > 0.8 ? "bg-emerald-500" : seasonProgress.pct_dollars > 0.5 ? "bg-blue-500" : "bg-slate-500"}`}
-                  style={{ width: `${Math.min(seasonProgress.pct_dollars * 100, 100)}%` }}
-                />
-              </div>
-              <div className="text-[10px] mt-1 text-slate-500">
-                {seasonProgress.weeks_actualized} wks done · {seasonProgress.weeks_remaining} remaining
-              </div>
-            </div>
-          )}
+            );
+          })()}
           {/* OTB Budget card */}
           <div className={`rounded-lg p-4 border ${budgetData && budgetData.budget > 0 && budgetData.remaining !== null && budgetData.remaining < 0 ? "bg-red-950/40 border-red-800" : "bg-slate-800 border-slate-700"}`}>
             <div className="text-xs text-slate-400 mb-1">Receipt Budget (cost)</div>
@@ -1070,15 +1141,15 @@ export default function WPPage() {
               <table className="w-full text-xs text-slate-300">
                 <thead>
                   <tr className="border-b border-slate-700 text-slate-400 bg-slate-800/80">
-                    {["Status", "Product", "Channel", "Week", "Fwd Coverage", "Lead Time", "EOP"].map((h) => (
+                    {["Status", "Product", "Channel", "Worst Week", "Coverage", "Lead Time", "Wks At Risk"].map((h) => (
                       <th key={h} className={`px-3 py-2 font-medium ${h === "Product" ? "text-left" : "text-right"}`}>{h}</th>
                     ))}
                     <th className="px-3 py-2 font-medium text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(showAllExceptions ? exceptions : exceptions.slice(0, 10)).map((ex) => (
-                    <tr key={`${ex.hierarchy_code}_${ex.channel}_${ex.current_week}`} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                  {exceptions.map((ex) => (
+                    <tr key={`${ex.hierarchy_code}_${ex.channel}`} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                       <td className="px-3 py-1.5 text-right">
                         {ex.exception_status === "critical" && <span className="text-red-400 font-semibold">⚠ Stockout</span>}
                         {ex.exception_status === "low"      && <span className="text-amber-400">↓ Low</span>}
@@ -1086,12 +1157,16 @@ export default function WPPage() {
                       </td>
                       <td className="px-3 py-1.5 text-left text-white">{ex.l2_name}</td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{ex.channel}</td>
-                      <td className="px-3 py-1.5 text-right font-mono">{ex.current_week}</td>
+                      <td className="px-3 py-1.5 text-right font-mono text-slate-400">Wk {String(ex.current_week).slice(-2)}</td>
                       <td className={`px-3 py-1.5 text-right font-semibold ${ex.exception_status === "critical" ? "text-red-400" : ex.exception_status === "low" ? "text-amber-400" : "text-orange-400"}`}>
                         {ex.coverage_wks} wks
                       </td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{ex.lead_time_weeks} wks</td>
-                      <td className="px-3 py-1.5 text-right">{fmtU(ex.eop_units)}</td>
+                      <td className="px-3 py-1.5 text-right">
+                        <span className={`font-medium ${ex.affected_weeks > 4 ? "text-red-400" : ex.affected_weeks > 1 ? "text-amber-400" : "text-slate-400"}`}>
+                          {ex.affected_weeks}
+                        </span>
+                      </td>
                       <td className="px-3 py-1.5 text-right">
                         <button
                           onClick={() => {
@@ -1106,21 +1181,9 @@ export default function WPPage() {
                   ))}
                 </tbody>
               </table>
-              {exceptions.length > 10 && (
-                <div className="px-4 py-2 border-t border-slate-700 flex items-center gap-2">
-                  <button
-                    onClick={() => setShowAllExceptions((v) => !v)}
-                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
-                  >
-                    {showAllExceptions
-                      ? "▴ Show top 10 only"
-                      : `▾ Show all ${exceptions.length} exceptions`}
-                  </button>
-                  {!showAllExceptions && (
-                    <span className="text-[10px] text-slate-600">showing worst {Math.min(10, exceptions.length)} of {exceptions.length}</span>
-                  )}
-                </div>
-              )}
+              <div className="px-4 py-2 border-t border-slate-700 text-[10px] text-slate-600">
+                One row per SKU × channel · showing worst coverage week · Wks At Risk = total affected weeks
+              </div>
             </div>
           )}
         </div>
@@ -1790,17 +1853,37 @@ export default function WPPage() {
                   return (
                   <div key={s.id} className={`bg-slate-800 border rounded-lg p-3 ${cIdx >= 0 ? "border-violet-600" : "border-slate-700"}`}>
                     <div className="flex items-start justify-between gap-2 mb-1">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
                         <button
                           onClick={() => toggleCompareSnap(s.id)}
                           title="Select for A/B comparison"
-                          className={`w-5 h-5 rounded border text-[10px] font-bold transition-colors flex items-center justify-center ${
+                          className={`w-5 h-5 rounded border text-[10px] font-bold transition-colors flex items-center justify-center flex-shrink-0 ${
                             cIdx === 0 ? "bg-violet-600 border-violet-500 text-white" :
                             cIdx === 1 ? "bg-indigo-600 border-indigo-500 text-white" :
                             "border-slate-600 text-slate-500 hover:border-violet-500"
                           }`}
                         >{cIdx === 0 ? "A" : cIdx === 1 ? "B" : "○"}</button>
-                        <div className="font-medium text-white text-sm">{s.name}</div>
+                        {renamingSnapId === s.id ? (
+                          <input
+                            autoFocus
+                            value={renameInput}
+                            onChange={(e) => setRenameInput(e.target.value)}
+                            onBlur={() => handleRenameSnapshot(s.id, renameInput)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleRenameSnapshot(s.id, renameInput);
+                              if (e.key === "Escape") { setRenamingSnapId(null); setRenameInput(""); }
+                            }}
+                            className="flex-1 bg-slate-700 border border-blue-500 text-white text-sm rounded px-2 py-0.5 outline-none min-w-0"
+                          />
+                        ) : (
+                          <button
+                            onClick={() => { setRenamingSnapId(s.id); setRenameInput(s.name); }}
+                            title="Click to rename"
+                            className="font-medium text-white text-sm hover:text-blue-300 transition-colors text-left truncate"
+                          >
+                            {s.name} <span className="text-slate-600 text-[9px]">✎</span>
+                          </button>
+                        )}
                       </div>
                       <button
                         onClick={() => handleDeleteSnapshot(s.id)}
@@ -1860,6 +1943,17 @@ export default function WPPage() {
 
       {/* ── Toast ── */}
       {toast && <Toast message={toast.message} type={toast.type} />}
+
+      {/* ── Confirm Dialog ── */}
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          detail={confirmDialog.detail}
+          confirmLabel={confirmDialog.confirmLabel}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
 
       {/* ── Snapshot Comparison panel ── */}
       {compareData && (
