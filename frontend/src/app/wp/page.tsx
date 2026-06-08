@@ -7,6 +7,7 @@ import {
   fetchTargetWOS, updateTargetWOS,
   undoRowOverride, acceptRecomm,
   compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget, updateBudget,
+  fetchSeasonProgress,
 } from "@/lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -90,6 +91,14 @@ type Filters = {
   channels: string[];
   weeks: number[];
   categories: string[];
+  current_week?: number;
+  planning_start_week?: number;
+};
+type SeasonProgress = {
+  actualized_units: number; actualized_dollars: number;
+  plan_units: number; plan_dollars: number;
+  pct_units: number; pct_dollars: number;
+  weeks_actualized: number; weeks_remaining: number;
 };
 type SKUSetting = {
   hierarchy_code: number;
@@ -282,6 +291,29 @@ function EditablePercent({
   );
 }
 
+// ── Audit field labels ────────────────────────────────────────────────────────
+const FIELD_LABELS: Record<string, string> = {
+  written_sales_units:          "Sales Units",
+  written_sales_dollars:        "Sales $",
+  written_dr_perc:              "Disc%",
+  on_order_placed_total_unit:   "OO Placed",
+  written_aur:                  "AUR",
+  written_auc:                  "AUC",
+  written_gm_dollar:            "GM $",
+  written_gm_perc:              "GM%",
+};
+function fieldLabel(f: string) { return FIELD_LABELS[f] ?? f.replace(/written_/g, "").replace(/_/g, " "); }
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function Toast({ message, type }: { message: string; type: "success" | "error" }) {
+  return (
+    <div className={`fixed bottom-6 right-6 z-[100] px-4 py-2.5 rounded-lg shadow-xl text-sm font-medium flex items-center gap-2 animate-fade-in-up
+      ${type === "success" ? "bg-emerald-800 border border-emerald-600 text-emerald-100" : "bg-red-900 border border-red-700 text-red-100"}`}>
+      {type === "success" ? "✓" : "✕"} {message}
+    </div>
+  );
+}
+
 // ── Delta badge ───────────────────────────────────────────────────────────────
 function Delta({ current, baseline, isDollar = false }: { current: number; baseline: number; isDollar?: boolean }) {
   const diff = current - baseline;
@@ -333,9 +365,22 @@ export default function WPPage() {
   const [chartCombo, setChartCombo] = useState<string>("");
   // target WOS keyed by "{hc}_{channel}"
   const [targetWOS, setTargetWOS] = useState<Record<string, number>>({});
+  // Toast
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Season progress
+  const [seasonProgress, setSeasonProgress] = useState<SeasonProgress | null>(null);
+  // Exception panel: show top-10 by default
+  const [showAllExceptions, setShowAllExceptions] = useState(false);
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
+
+  function showToast(message: string, type: "success" | "error" = "success") {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ message, type });
+    toastTimerRef.current = setTimeout(() => setToast(null), 2200);
+  }
 
   // Stable string keys for useCallback dep arrays (avoids array identity issues)
   const hcsKey = [...selectedHcs].sort().join(",");
@@ -352,13 +397,14 @@ export default function WPPage() {
   });
 
   const reloadPortfolioAndSummary = useCallback(async () => {
-    const [s, p, ex, bud] = await Promise.all([
-      fetchWPSummary({}), fetchPortfolio(), fetchExceptions(), fetchBudget(),
+    const [s, p, ex, bud, sp] = await Promise.all([
+      fetchWPSummary({}), fetchPortfolio(), fetchExceptions(), fetchBudget(), fetchSeasonProgress(),
     ]);
     setCurrentSummary(s);
     setPortfolio(p);
     setExceptions(ex);
     setBudgetData(bud);
+    setSeasonProgress(sp);
   }, []);
 
   const reloadRows = useCallback(async () => {
@@ -393,8 +439,6 @@ export default function WPPage() {
     reloadPortfolioAndSummary();
     reloadSkuSettings();
     reloadTargetWOS();
-    fetchExceptions().then(setExceptions);
-    fetchBudget().then(setBudgetData);
   }, []);
 
   useEffect(() => { reloadRows(); }, [reloadRows]);
@@ -431,8 +475,11 @@ export default function WPPage() {
         )
       );
       reloadPortfolioAndSummary();
+      showToast("Saved ✓");
     } catch (e: unknown) {
-      setEditError(e instanceof Error ? e.message : "Edit failed");
+      const msg = e instanceof Error ? e.message : "Edit failed";
+      setEditError(msg);
+      showToast(msg, "error");
     }
   }
 
@@ -763,8 +810,18 @@ export default function WPPage() {
       {/* ── Header ── */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Working Plan</h1>
-          <p className="text-xs text-slate-500 mt-0.5">FY2026 · select at least 1 product + 1 channel to edit · edits broadcast to all selected</p>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-white">Working Plan</h1>
+            {filters.current_week && (
+              <span className="text-xs bg-slate-700 border border-slate-600 text-slate-300 px-2.5 py-1 rounded-full">
+                FY2026 · <span className="text-orange-400 font-semibold">Wk {String(filters.current_week).slice(-2)} in-flight</span>
+                {filters.planning_start_week && (
+                  <> · <span className="text-blue-400">Planning Wk {String(filters.planning_start_week).slice(-2)}–52</span></>
+                )}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-slate-500 mt-0.5">select at least 1 product + 1 channel to edit · edits broadcast to all selected</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {editError && <span className="text-xs text-red-400 bg-red-900/30 px-2 py-1 rounded">{editError}</span>}
@@ -898,7 +955,7 @@ export default function WPPage() {
 
       {/* ── Portfolio KPI cards ── */}
       {currentSummary && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
           {[
             {
               label: "Portfolio Sales $", val: fmtD(currentSummary.total_written_sales_dollars),
@@ -923,6 +980,26 @@ export default function WPPage() {
               {k.delta && <div className="mt-1">{k.delta}</div>}
             </div>
           ))}
+          {/* Season Progress card */}
+          {seasonProgress && (
+            <div className="rounded-lg p-4 border bg-slate-800 border-slate-700">
+              <div className="text-xs text-slate-400 mb-1">Season Pace</div>
+              <div className="text-xl font-bold text-white">{pct(seasonProgress.pct_dollars)}</div>
+              <div className="text-[10px] mt-1 text-slate-400">
+                {fmtD(seasonProgress.actualized_dollars)} actualized
+                <span className="text-slate-600"> of {fmtD(seasonProgress.plan_dollars)}</span>
+              </div>
+              <div className="mt-1.5 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${seasonProgress.pct_dollars > 0.8 ? "bg-emerald-500" : seasonProgress.pct_dollars > 0.5 ? "bg-blue-500" : "bg-slate-500"}`}
+                  style={{ width: `${Math.min(seasonProgress.pct_dollars * 100, 100)}%` }}
+                />
+              </div>
+              <div className="text-[10px] mt-1 text-slate-500">
+                {seasonProgress.weeks_actualized} wks done · {seasonProgress.weeks_remaining} remaining
+              </div>
+            </div>
+          )}
           {/* OTB Budget card */}
           <div className={`rounded-lg p-4 border ${budgetData && budgetData.budget > 0 && budgetData.remaining !== null && budgetData.remaining < 0 ? "bg-red-950/40 border-red-800" : "bg-slate-800 border-slate-700"}`}>
             <div className="text-xs text-slate-400 mb-1">Receipt Budget (cost)</div>
@@ -1000,7 +1077,7 @@ export default function WPPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {exceptions.map((ex) => (
+                  {(showAllExceptions ? exceptions : exceptions.slice(0, 10)).map((ex) => (
                     <tr key={`${ex.hierarchy_code}_${ex.channel}_${ex.current_week}`} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                       <td className="px-3 py-1.5 text-right">
                         {ex.exception_status === "critical" && <span className="text-red-400 font-semibold">⚠ Stockout</span>}
@@ -1029,6 +1106,21 @@ export default function WPPage() {
                   ))}
                 </tbody>
               </table>
+              {exceptions.length > 10 && (
+                <div className="px-4 py-2 border-t border-slate-700 flex items-center gap-2">
+                  <button
+                    onClick={() => setShowAllExceptions((v) => !v)}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    {showAllExceptions
+                      ? "▴ Show top 10 only"
+                      : `▾ Show all ${exceptions.length} exceptions`}
+                  </button>
+                  {!showAllExceptions && (
+                    <span className="text-[10px] text-slate-600">showing worst {Math.min(10, exceptions.length)} of {exceptions.length}</span>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1307,18 +1399,20 @@ export default function WPPage() {
                   ? fmtU(topDownPreview.proposed_total - topDownPreview.current_total)
                   : fmtD(topDownPreview.proposed_total - topDownPreview.current_total)})
               </div>
-              <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 max-h-16 overflow-auto">
+              <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 max-h-24 overflow-auto">
                 {Object.entries(
                   topDownPreview.rows.reduce((acc, r) => {
-                    acc[r.current_week] = (acc[r.current_week] ?? 0) + r.proposed;
+                    if (!acc[r.current_week]) acc[r.current_week] = { val: 0, wt: 0 };
+                    acc[r.current_week].val += r.proposed;
+                    acc[r.current_week].wt  += r.weight_pct;
                     return acc;
-                  }, {} as Record<number, number>)
-                ).slice(0, 16).map(([wk, val]) => (
+                  }, {} as Record<number, { val: number; wt: number }>)
+                ).map(([wk, { val, wt }]) => (
                   <span key={wk} className="text-[10px] text-slate-400">
                     Wk{String(wk).slice(-2)}: <span className="text-emerald-300">{topDownPreview.field === "written_sales_units" ? fmtU(val) : fmtD(val)}</span>
+                    <span className="text-slate-600 ml-0.5">({wt.toFixed(1)}%)</span>
                   </span>
                 ))}
-                {topDownPreview.weeks > 16 && <span className="text-[10px] text-slate-600">+{topDownPreview.weeks - 16} more…</span>}
               </div>
             </div>
             <div className="flex gap-2 items-start">
@@ -1632,7 +1726,7 @@ export default function WPPage() {
                         <span className="text-slate-500">×</span>
                         <span className="text-slate-400">{entry.channel}</span>
                         <span className="text-slate-600">·</span>
-                        <span className="text-blue-300">{entry.field.replace("written_", "")}</span>
+                        <span className="text-blue-300">{fieldLabel(entry.field)}</span>
                         <span className="text-slate-600">·</span>
                         <span className="text-slate-500">{entry.old_value ?? "base"}</span>
                         <span className="text-slate-600">→</span>
@@ -1663,12 +1757,27 @@ export default function WPPage() {
                 {compareIds.length > 0 && (
                   <div className="mb-3 p-2 bg-slate-800 border border-violet-800 rounded-lg">
                     <div className="text-[10px] text-violet-400 mb-1.5">
-                      {compareIds.length === 1 ? "Select 1 more snapshot to compare" : "Ready to compare 2 snapshots"}
+                      {compareIds.length === 1 ? "Select 1 more snapshot — or compare vs live plan" : "Ready to compare"}
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button onClick={handleCompare} disabled={compareIds.length !== 2 || compareLoading}
                         className="text-xs bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors"
-                      >{compareLoading ? "Loading…" : "Compare A vs B →"}</button>
+                      >{compareLoading ? "Loading…" : "A vs B →"}</button>
+                      <button
+                        disabled={compareIds.length !== 1 || compareLoading}
+                        onClick={async () => {
+                          if (compareIds.length !== 1) return;
+                          setCompareLoading(true);
+                          try {
+                            const data = await compareSnapshots(compareIds[0], 0);
+                            setCompareData(data);
+                          } catch (e: unknown) {
+                            setEditError(e instanceof Error ? e.message : "Compare failed");
+                          } finally { setCompareLoading(false); }
+                        }}
+                        className="text-xs bg-indigo-700 hover:bg-indigo-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors"
+                        title="Compare selected snapshot vs current live plan (no save needed)"
+                      >{compareLoading ? "Loading…" : "A vs Live →"}</button>
                       <button onClick={() => { setCompareIds([]); setCompareData(null); }}
                         className="text-xs text-slate-500 hover:text-red-400 transition-colors"
                       >Clear</button>
@@ -1749,6 +1858,9 @@ export default function WPPage() {
         </>
       )}
 
+      {/* ── Toast ── */}
+      {toast && <Toast message={toast.message} type={toast.type} />}
+
       {/* ── Snapshot Comparison panel ── */}
       {compareData && (
         <>
@@ -1788,14 +1900,14 @@ export default function WPPage() {
               <table className="w-full text-xs text-slate-300">
                 <thead className="sticky top-0 bg-slate-900 border-b border-slate-700 z-10">
                   <tr className="text-slate-400">
-                    {["Week","Product","Ch","A Sales U","B Sales U","Δ U","A Sales $","B Sales $","Δ $","A GM $","B GM $","Δ GM","Δ EOP"].map((h, i) => (
+                    {["Week","Product","Ch","A Sales U","B Sales U","Δ U","A Sales $","B Sales $","Δ $","A GM $","B GM $","Δ GM","Δ EOP","Δ Rcpt"].map((h, i) => (
                       <th key={h} className={`px-3 py-2 font-medium whitespace-nowrap ${i < 3 ? "text-left" : "text-right"} ${h.startsWith("A ") ? "text-violet-400" : h.startsWith("B ") ? "text-indigo-400" : ""}`}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {compareData.rows
-                    .filter((r) => r.delta_sales_units !== 0 || r.delta_sales_dollars !== 0 || r.delta_eop !== 0)
+                    .filter((r) => r.delta_sales_units !== 0 || r.delta_sales_dollars !== 0 || r.delta_eop !== 0 || r.delta_receipts !== 0)
                     .map((r) => (
                     <tr key={`${r.hierarchy_code}_${r.channel}_${r.current_week}`} className="border-b border-slate-800 hover:bg-slate-800/50">
                       <td className="px-3 py-1.5 font-mono text-slate-400">{r.current_week}</td>
@@ -1819,13 +1931,16 @@ export default function WPPage() {
                       <td className={`px-3 py-1.5 text-right ${r.delta_eop > 0 ? "text-blue-400" : r.delta_eop < 0 ? "text-orange-400" : "text-slate-600"}`}>
                         {r.delta_eop > 0 ? "+" : ""}{fmtU(r.delta_eop)}
                       </td>
+                      <td className={`px-3 py-1.5 text-right font-semibold ${r.delta_receipts > 0 ? "text-emerald-400" : r.delta_receipts < 0 ? "text-red-400" : "text-slate-600"}`}>
+                        {r.delta_receipts > 0 ? "+" : ""}{fmtU(r.delta_receipts)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             <div className="px-4 py-2 border-t border-slate-800 text-[10px] text-slate-600 flex-shrink-0">
-              Only rows with differences shown · Sales / GM / EOP values are accurate · WOS uses current demand plan
+              Only rows with differences shown · Sales / GM / EOP / Receipts are accurate · WOS uses current demand plan
             </div>
           </div>
         </>

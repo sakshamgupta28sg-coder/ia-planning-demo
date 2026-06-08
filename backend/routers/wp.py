@@ -9,7 +9,7 @@ from dummy_data import (
     get_target_wos, update_channel_target_wos, _CHANNEL_TARGET_WOS,
     clear_single_override, accept_recomm_receipts,
     compare_snapshots, get_exceptions_panel,
-    get_budget, set_budget, get_audit_log,
+    get_budget, set_budget, get_audit_log, get_season_progress,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -20,7 +20,15 @@ EDITABLE_FIELDS = {"written_sales_units", "written_sales_dollars", "on_order_pla
 # ── Filters ───────────────────────────────────────────────────────────────────
 @router.get("/filters")
 def get_filters():
-    return {"hierarchies": HIERARCHIES, "channels": CHANNELS, "weeks": FISCAL_WEEKS, "categories": CATEGORIES}
+    planning_start = next((w for w in FISCAL_WEEKS if w > CURRENT_WEEK), None)
+    return {
+        "hierarchies": HIERARCHIES,
+        "channels": CHANNELS,
+        "weeks": FISCAL_WEEKS,
+        "categories": CATEGORIES,
+        "current_week": CURRENT_WEEK,
+        "planning_start_week": planning_start,
+    }
 
 
 # ── By-week aggregation (supports portfolio + filtered view) ──────────────────
@@ -414,11 +422,17 @@ class SnapshotRequest(BaseModel):
 
 @router.get("/snapshots/compare")
 def snapshot_compare(a: int, b: int):
-    """Side-by-side week-level comparison of two saved snapshots."""
+    """Side-by-side week-level comparison. b=0 means current live plan."""
     result = compare_snapshots(a, b)
     if not result:
-        raise HTTPException(404, "One or both snapshots not found")
+        raise HTTPException(404, "Snapshot A not found")
     return result
+
+
+@router.get("/season-progress")
+def season_progress():
+    """Actualized-to-date vs full-year plan — season pace KPI."""
+    return get_season_progress()
 
 
 @router.get("/snapshots")

@@ -1320,20 +1320,41 @@ def preview_top_down(hcs: List[int], channels: List[str], target: float, field: 
 def compare_snapshots(snap_a_id: int, snap_b_id: int) -> Dict:
     """Return side-by-side comparison of two snapshots at week×SKU×channel grain.
 
+    snap_b_id=0 means "current live plan" (no save required).
     Uses get_agg_rows with each snapshot's override set so the BOP→EOP chain
     is computed correctly for both.  WOS/recomm values use current in-memory
     demand indexes (noted in UI); Sales/GM/EOP are fully accurate.
     """
     snap_a = db_get_snapshot(snap_a_id)
-    snap_b = db_get_snapshot(snap_b_id)
-    if not snap_a or not snap_b:
+    if not snap_a:
         return {}
 
     rows_a = get_agg_rows(_overrides_override=snap_a["overrides"])
-    rows_b = get_agg_rows(_overrides_override=snap_b["overrides"])
+
+    # snap_b_id == 0 → use current live overrides (no snapshot required)
+    if snap_b_id == 0:
+        rows_b_list = get_agg_rows()
+        live_plan = [r for r in rows_b_list if not r.get("actualised")]
+        total_u = sum(r["written_sales_units"] for r in live_plan)
+        total_d = round(sum(r["written_sales_dollars"] for r in live_plan), 2)
+        total_g = round(sum(r["written_gm_dollar"] for r in live_plan), 2)
+        snap_b_meta    = {"id": 0, "name": "Live Plan", "created_at": "now"}
+        snap_b_summary = {
+            "total_sales_units":   total_u,
+            "total_sales_dollars": total_d,
+            "total_gm_dollar":     total_g,
+            "avg_gm_perc":         round(total_g / total_d if total_d else 0, 4),
+        }
+    else:
+        snap_b = db_get_snapshot(snap_b_id)
+        if not snap_b:
+            return {}
+        rows_b_list    = get_agg_rows(_overrides_override=snap_b["overrides"])
+        snap_b_meta    = {"id": snap_b["id"], "name": snap_b["name"], "created_at": snap_b["created_at"]}
+        snap_b_summary = snap_b["summary"]
 
     lkp_a = {(r["hierarchy_code"], r["channel"], r["current_week"]): r for r in rows_a}
-    lkp_b = {(r["hierarchy_code"], r["channel"], r["current_week"]): r for r in rows_b}
+    lkp_b = {(r["hierarchy_code"], r["channel"], r["current_week"]): r for r in rows_b_list}
 
     # All planning-week keys from either snapshot
     all_keys = {k for k, r in {**lkp_a, **lkp_b}.items()
@@ -1366,10 +1387,10 @@ def compare_snapshots(snap_a_id: int, snap_b_id: int) -> Dict:
         })
 
     sa_sum = snap_a["summary"]
-    sb_sum = snap_b["summary"]
+    sb_sum = snap_b_summary
     return {
         "snap_a": {"id": snap_a["id"], "name": snap_a["name"], "created_at": snap_a["created_at"]},
-        "snap_b": {"id": snap_b["id"], "name": snap_b["name"], "created_at": snap_b["created_at"]},
+        "snap_b": snap_b_meta,
         "summary": {
             "a_sales_units":    sa_sum.get("total_sales_units", 0),
             "b_sales_units":    sb_sum.get("total_sales_units", 0),
@@ -1448,6 +1469,27 @@ def set_budget(value: float) -> Dict:
 
 def get_audit_log(limit: int = 100) -> List[Dict]:
     return db_get_audit_log(limit)
+
+
+def get_season_progress() -> Dict:
+    """Actualized-to-date vs full-year plan — season pace tracking."""
+    all_rows = get_agg_rows()
+    plan_u = sum(r["written_sales_units"] for r in all_rows)
+    plan_d = round(sum(r["written_sales_dollars"] for r in all_rows), 2)
+    act_u  = sum(r.get("actual_sales_units", 0) for r in all_rows if r.get("actualised"))
+    act_d  = round(sum(r.get("actual_sales_dollars", 0.0) for r in all_rows if r.get("actualised")), 2)
+    wks_act = len({r["current_week"] for r in all_rows if r.get("actualised")})
+    wks_rem = len({r["current_week"] for r in all_rows if not r.get("actualised") and not r.get("is_ongoing")})
+    return {
+        "actualized_units":   act_u,
+        "actualized_dollars": act_d,
+        "plan_units":         plan_u,
+        "plan_dollars":       plan_d,
+        "pct_units":          round(act_u / plan_u, 4) if plan_u else 0.0,
+        "pct_dollars":        round(act_d / plan_d, 4) if plan_d else 0.0,
+        "weeks_actualized":   wks_act,
+        "weeks_remaining":    wks_rem,
+    }
 
 
 def apply_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> int:

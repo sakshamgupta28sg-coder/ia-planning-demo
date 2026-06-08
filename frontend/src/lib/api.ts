@@ -216,3 +216,8 @@ export async function acceptRecomm(body: { hierarchy_codes: number[]; channels: 
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function fetchSeasonProgress() {
+  const res = await fetch(`${BASE}/wp/season-progress`, { cache: "no-store" });
+  return res.json();
+}
