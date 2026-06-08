@@ -441,6 +441,8 @@ from database import (
     db_get_all_channel_settings, db_upsert_channel_setting,
     db_get_all_new_skus, db_get_max_new_sku_hc, db_insert_new_sku, db_delete_new_sku,
     db_delete_override,
+    db_log_audit, db_get_audit_log,
+    db_get_setting, db_set_setting,
 )
 
 init_db()  # create tables on first import; no-op if already exist
@@ -757,8 +759,13 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     return row
 
 
-def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
-    """Aggregate WP_DATA by (hc, wk, ch), sum sub_channels, apply overrides."""
+def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
+                 _overrides_override: Dict = None) -> List[Dict]:
+    """Aggregate WP_DATA by (hc, wk, ch), sum sub_channels, apply overrides.
+
+    _overrides_override: if provided, use this dict instead of reading from DB.
+    Used by compare_snapshots() to evaluate two scenarios without touching global state.
+    """
     buckets: Dict[str, Dict] = {}
 
     for r in WP_DATA:
@@ -884,7 +891,8 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None) -> List[Dict]:
         b["lly_units_var_perc"]   = round(b["lly_units_var"]   / lly["lly_units"],   4) if lly["lly_units"]   > 0 else 0.0
         b["lly_dollars_var_perc"] = round(b["lly_dollars_var"] / lly["lly_dollars"], 4) if lly["lly_dollars"] > 0 else 0.0
 
-    for key, ovr in db_get_overrides().items():
+    _active_ovrs = _overrides_override if _overrides_override is not None else db_get_overrides()
+    for key, ovr in _active_ovrs.items():
         if key in buckets:
             buckets[key] = _recalc(buckets[key], ovr)
 
@@ -950,6 +958,18 @@ def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = 
     key = _ovr_key(hc, wk, ch)
     overrides = db_get_overrides()
     entry = overrides.get(key, {})
+
+    # Capture old value for audit log (existing override → base WP_DATA → None)
+    old_value = entry.get(field)
+    if old_value is None:
+        _base_row = next(
+            (r for r in WP_DATA
+             if r["hierarchy_code"] == hc and r["channel"] == ch and r["current_week"] == wk),
+            None,
+        )
+        if _base_row:
+            old_value = _base_row.get(field)
+
     # Round appropriately per field type
     if field in ("written_sales_units", "on_order_placed_total_unit"):
         value = float(round(value))
@@ -962,6 +982,7 @@ def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = 
     if field == "written_dr_perc" and mode in ("hold_units", "hold_dollars"):
         entry["_edit_mode"] = mode
     db_upsert_override(key, entry)
+    db_log_audit(hc, ch, wk, field, old_value, value)
 
     # Demand changed → rebuild demand indexes + pipeline + recomm
     if field in ("written_sales_units", "written_sales_dollars"):
@@ -1294,6 +1315,139 @@ def preview_top_down(hcs: List[int], channels: List[str], target: float, field: 
         "weeks":          len({r["current_week"] for r in planning_rows}),
         "field":          field,
     }
+
+
+def compare_snapshots(snap_a_id: int, snap_b_id: int) -> Dict:
+    """Return side-by-side comparison of two snapshots at week×SKU×channel grain.
+
+    Uses get_agg_rows with each snapshot's override set so the BOP→EOP chain
+    is computed correctly for both.  WOS/recomm values use current in-memory
+    demand indexes (noted in UI); Sales/GM/EOP are fully accurate.
+    """
+    snap_a = db_get_snapshot(snap_a_id)
+    snap_b = db_get_snapshot(snap_b_id)
+    if not snap_a or not snap_b:
+        return {}
+
+    rows_a = get_agg_rows(_overrides_override=snap_a["overrides"])
+    rows_b = get_agg_rows(_overrides_override=snap_b["overrides"])
+
+    lkp_a = {(r["hierarchy_code"], r["channel"], r["current_week"]): r for r in rows_a}
+    lkp_b = {(r["hierarchy_code"], r["channel"], r["current_week"]): r for r in rows_b}
+
+    # All planning-week keys from either snapshot
+    all_keys = {k for k, r in {**lkp_a, **lkp_b}.items()
+                if not r.get("actualised") and not r.get("is_ongoing")}
+
+    rows_out = []
+    for (hc, ch, wk) in sorted(all_keys):
+        ra = lkp_a.get((hc, ch, wk), {})
+        rb = lkp_b.get((hc, ch, wk), {})
+        rows_out.append({
+            "hierarchy_code":   hc,
+            "l2_name":          rb.get("l2_name") or ra.get("l2_name", ""),
+            "channel":          ch,
+            "current_week":     wk,
+            "a_sales_units":    ra.get("written_sales_units", 0),
+            "b_sales_units":    rb.get("written_sales_units", 0),
+            "delta_sales_units": rb.get("written_sales_units", 0) - ra.get("written_sales_units", 0),
+            "a_sales_dollars":  ra.get("written_sales_dollars", 0.0),
+            "b_sales_dollars":  rb.get("written_sales_dollars", 0.0),
+            "delta_sales_dollars": round(rb.get("written_sales_dollars", 0.0) - ra.get("written_sales_dollars", 0.0), 2),
+            "a_gm_dollar":      ra.get("written_gm_dollar", 0.0),
+            "b_gm_dollar":      rb.get("written_gm_dollar", 0.0),
+            "delta_gm_dollar":  round(rb.get("written_gm_dollar", 0.0) - ra.get("written_gm_dollar", 0.0), 2),
+            "a_eop":            ra.get("eop_units", 0),
+            "b_eop":            rb.get("eop_units", 0),
+            "delta_eop":        rb.get("eop_units", 0) - ra.get("eop_units", 0),
+            "a_receipts":       ra.get("total_receipt_units", 0),
+            "b_receipts":       rb.get("total_receipt_units", 0),
+            "delta_receipts":   rb.get("total_receipt_units", 0) - ra.get("total_receipt_units", 0),
+        })
+
+    sa_sum = snap_a["summary"]
+    sb_sum = snap_b["summary"]
+    return {
+        "snap_a": {"id": snap_a["id"], "name": snap_a["name"], "created_at": snap_a["created_at"]},
+        "snap_b": {"id": snap_b["id"], "name": snap_b["name"], "created_at": snap_b["created_at"]},
+        "summary": {
+            "a_sales_units":    sa_sum.get("total_sales_units", 0),
+            "b_sales_units":    sb_sum.get("total_sales_units", 0),
+            "a_sales_dollars":  sa_sum.get("total_sales_dollars", 0.0),
+            "b_sales_dollars":  sb_sum.get("total_sales_dollars", 0.0),
+            "a_gm_dollar":      sa_sum.get("total_gm_dollar", 0.0),
+            "b_gm_dollar":      sb_sum.get("total_gm_dollar", 0.0),
+        },
+        "rows": rows_out,
+    }
+
+
+def get_exceptions_panel() -> List[Dict]:
+    """Return all planning-week rows with exception status (non-ok only),
+    per SKU×channel, with worst week identified — for the exceptions panel."""
+    all_rows = get_agg_rows()
+    result = []
+    for r in all_rows:
+        if r.get("actualised") or r.get("is_ongoing"):
+            continue
+        hc = r["hierarchy_code"]
+        m  = get_effective_metrics(hc)
+        lt = m["lead_time_weeks"]
+        cov = r.get("fwd_coverage_wks") if r.get("fwd_coverage_wks") is not None else r.get("wos")
+        if cov is None:
+            continue
+        if cov < lt * 0.5:
+            status = "critical"
+        elif cov < lt:
+            status = "low"
+        elif cov > lt * 3:
+            status = "excess"
+        else:
+            continue   # ok — skip
+        result.append({
+            "hierarchy_code":  hc,
+            "l2_name":         r.get("l2_name", ""),
+            "channel":         r["channel"],
+            "current_week":    r["current_week"],
+            "exception_status": status,
+            "coverage_wks":    round(cov, 1),
+            "lead_time_weeks": lt,
+            "eop_units":       r["eop_units"],
+            "wos":             r.get("wos"),
+        })
+    # Sort: critical first, then low, then excess; within each by week
+    order = {"critical": 0, "low": 1, "excess": 2}
+    return sorted(result, key=lambda x: (order[x["exception_status"]], x["current_week"]))
+
+
+def get_budget() -> Dict:
+    """Return OTB receipt budget and current plan consumption."""
+    budget_str = db_get_setting("otb_budget")
+    budget = float(budget_str) if budget_str else 0.0
+    # Planned receipt cost = sum(total_receipt_units × auc) for all planning + ongoing weeks
+    planned_cost = sum(
+        r["total_receipt_units"] * r.get("written_auc", 0)
+        for r in get_agg_rows()
+        if not r.get("actualised")
+    )
+    planned_cost = round(planned_cost, 2)
+    remaining = round(budget - planned_cost, 2) if budget > 0 else None
+    pct_consumed = round(planned_cost / budget, 4) if budget > 0 else None
+    return {
+        "budget":        budget,
+        "planned_cost":  planned_cost,
+        "remaining":     remaining,
+        "pct_consumed":  pct_consumed,
+    }
+
+
+def set_budget(value: float) -> Dict:
+    db_set_setting("otb_budget", str(round(value, 2)))
+    return get_budget()
+
+
+def get_audit_log(limit: int = 100) -> List[Dict]:
+    return db_get_audit_log(limit)
 
 
 def apply_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> int:

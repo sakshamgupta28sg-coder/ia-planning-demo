@@ -6,6 +6,7 @@ import {
   topDownDistribute, previewTopDown, fetchSKUSettings, updateSKUSetting,
   fetchTargetWOS, updateTargetWOS,
   undoRowOverride, acceptRecomm,
+  compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget, updateBudget,
 } from "@/lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -51,10 +52,36 @@ type PortfolioRow = {
 };
 type TopDownPreview = {
   rows: { hierarchy_code: number; channel: string; current_week: number; current: number; proposed: number; weight_pct: number }[];
-  current_total: number;
-  proposed_total: number;
-  weeks: number;
-  field: string;
+  current_total: number; proposed_total: number; weeks: number; field: string;
+};
+type ExceptionRow = {
+  hierarchy_code: number; l2_name: string; channel: string; current_week: number;
+  exception_status: "critical" | "low" | "excess"; coverage_wks: number;
+  lead_time_weeks: number; eop_units: number; wos: number | null;
+};
+type AuditEntry = {
+  id: number; timestamp: string; hierarchy_code: number; channel: string;
+  current_week: number; field: string; old_value: string | null; new_value: string;
+};
+type BudgetData = {
+  budget: number; planned_cost: number; remaining: number | null; pct_consumed: number | null;
+};
+type SnapCompare = {
+  snap_a: { id: number; name: string; created_at: string };
+  snap_b: { id: number; name: string; created_at: string };
+  summary: {
+    a_sales_units: number; b_sales_units: number;
+    a_sales_dollars: number; b_sales_dollars: number;
+    a_gm_dollar: number; b_gm_dollar: number;
+  };
+  rows: {
+    hierarchy_code: number; l2_name: string; channel: string; current_week: number;
+    a_sales_units: number; b_sales_units: number; delta_sales_units: number;
+    a_sales_dollars: number; b_sales_dollars: number; delta_sales_dollars: number;
+    a_gm_dollar: number; b_gm_dollar: number; delta_gm_dollar: number;
+    a_eop: number; b_eop: number; delta_eop: number;
+    a_receipts: number; b_receipts: number; delta_receipts: number;
+  }[];
 };
 type Summary = { total_written_sales_units: number; total_written_sales_dollars: number; total_written_gm_dollar: number; avg_written_gm_perc: number };
 type Snapshot = { id: number; name: string; created_at: string; overrides_count: number; summary: { total_sales_units: number; total_sales_dollars: number; total_gm_dollar: number; avg_gm_perc: number } };
@@ -288,6 +315,19 @@ export default function WPPage() {
   const [topDownLoading, setTopDownLoading] = useState(false);
   const [topDownPreview, setTopDownPreview] = useState<TopDownPreview | null>(null);
   const [acceptRecommLoading, setAcceptRecommLoading] = useState(false);
+  // Exception panel
+  const [exceptions, setExceptions] = useState<ExceptionRow[]>([]);
+  const [showExceptions, setShowExceptions] = useState(false);
+  // Audit log
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+  const [showAuditLog, setShowAuditLog] = useState(false);
+  // Budget
+  const [budgetData, setBudgetData] = useState<BudgetData | null>(null);
+  const [budgetInput, setBudgetInput] = useState("");
+  // Snapshot comparison
+  const [compareIds, setCompareIds] = useState<number[]>([]);
+  const [compareData, setCompareData] = useState<SnapCompare | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
   const [skuSettings, setSkuSettings] = useState<Record<number, SKUSetting>>({});
   const [discPctMode, setDiscPctMode] = useState<"hold_units" | "hold_dollars">("hold_units");
   const [chartCombo, setChartCombo] = useState<string>("");
@@ -312,9 +352,13 @@ export default function WPPage() {
   });
 
   const reloadPortfolioAndSummary = useCallback(async () => {
-    const [s, p] = await Promise.all([fetchWPSummary({}), fetchPortfolio()]);
+    const [s, p, ex, bud] = await Promise.all([
+      fetchWPSummary({}), fetchPortfolio(), fetchExceptions(), fetchBudget(),
+    ]);
     setCurrentSummary(s);
     setPortfolio(p);
+    setExceptions(ex);
+    setBudgetData(bud);
   }, []);
 
   const reloadRows = useCallback(async () => {
@@ -349,6 +393,8 @@ export default function WPPage() {
     reloadPortfolioAndSummary();
     reloadSkuSettings();
     reloadTargetWOS();
+    fetchExceptions().then(setExceptions);
+    fetchBudget().then(setBudgetData);
   }, []);
 
   useEffect(() => { reloadRows(); }, [reloadRows]);
@@ -491,6 +537,36 @@ export default function WPPage() {
       reloadPortfolioAndSummary();
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "Undo failed");
+    }
+  }
+
+  async function handleBudgetSave() {
+    const v = parseFloat(budgetInput);
+    if (isNaN(v) || v < 0) return;
+    const data = await updateBudget(v);
+    setBudgetData(data);
+    setBudgetInput("");
+  }
+
+  async function toggleCompareSnap(id: number) {
+    setCompareData(null);
+    setCompareIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= 2) return [prev[1], id];
+      return [...prev, id];
+    });
+  }
+
+  async function handleCompare() {
+    if (compareIds.length !== 2) return;
+    setCompareLoading(true);
+    try {
+      const data = await compareSnapshots(compareIds[0], compareIds[1]);
+      setCompareData(data);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Comparison failed");
+    } finally {
+      setCompareLoading(false);
     }
   }
 
@@ -719,6 +795,12 @@ export default function WPPage() {
           >
             📸 Snapshots ({snapshots.length})
           </button>
+          <button
+            onClick={() => { setShowAuditLog((v) => !v); if (!showAuditLog) fetchAuditLog(100).then(setAuditLog); }}
+            className={`text-xs px-3 py-1.5 rounded transition-colors border ${showAuditLog ? "bg-cyan-800 border-cyan-600 text-white" : "bg-slate-800 border-slate-600 text-slate-300 hover:bg-slate-700"}`}
+          >
+            📋 Change Log
+          </button>
         </div>
       </div>
 
@@ -816,7 +898,7 @@ export default function WPPage() {
 
       {/* ── Portfolio KPI cards ── */}
       {currentSummary && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           {[
             {
               label: "Portfolio Sales $", val: fmtD(currentSummary.total_written_sales_dollars),
@@ -841,6 +923,114 @@ export default function WPPage() {
               {k.delta && <div className="mt-1">{k.delta}</div>}
             </div>
           ))}
+          {/* OTB Budget card */}
+          <div className={`rounded-lg p-4 border ${budgetData && budgetData.budget > 0 && budgetData.remaining !== null && budgetData.remaining < 0 ? "bg-red-950/40 border-red-800" : "bg-slate-800 border-slate-700"}`}>
+            <div className="text-xs text-slate-400 mb-1">Receipt Budget (cost)</div>
+            {budgetData && budgetData.budget > 0 ? (
+              <>
+                <div className="text-xl font-bold text-white">{fmtD(budgetData.planned_cost)}</div>
+                <div className="text-[10px] mt-1 text-slate-400">
+                  of {fmtD(budgetData.budget)} budget
+                  {budgetData.remaining !== null && (
+                    <span className={budgetData.remaining < 0 ? " text-red-400 font-semibold" : " text-emerald-400"}>
+                      {" "}({budgetData.remaining >= 0 ? "+" : ""}{fmtD(budgetData.remaining)} remaining)
+                    </span>
+                  )}
+                </div>
+                {budgetData.pct_consumed !== null && (
+                  <div className="mt-1.5 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${budgetData.pct_consumed > 1 ? "bg-red-500" : budgetData.pct_consumed > 0.85 ? "bg-amber-500" : "bg-emerald-500"}`}
+                      style={{ width: `${Math.min(budgetData.pct_consumed * 100, 100)}%` }}
+                    />
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-sm text-slate-500 mt-1">No budget set</div>
+            )}
+            <div className="flex gap-1 mt-2">
+              <input
+                value={budgetInput}
+                onChange={(e) => setBudgetInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleBudgetSave()}
+                placeholder={budgetData?.budget ? fmtD(budgetData.budget) : "Set budget…"}
+                className="bg-slate-900 border border-slate-700 text-[10px] text-slate-300 rounded px-2 py-1 w-24 outline-none focus:border-blue-500"
+              />
+              <button onClick={handleBudgetSave} disabled={!budgetInput.trim()}
+                className="text-[10px] bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-300 px-2 py-1 rounded transition-colors"
+              >Set</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Exception Alert Panel ── */}
+      {exceptions.length > 0 && (
+        <div className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700">
+          <button
+            onClick={() => setShowExceptions((v) => !v)}
+            className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-700/40 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-200">⚠ Inventory Exceptions</span>
+              <span className="text-[10px] bg-red-900/50 text-red-300 px-1.5 py-0.5 rounded">
+                {exceptions.filter((e) => e.exception_status === "critical").length} critical
+              </span>
+              <span className="text-[10px] bg-amber-900/40 text-amber-300 px-1.5 py-0.5 rounded">
+                {exceptions.filter((e) => e.exception_status === "low").length} low
+              </span>
+              {exceptions.filter((e) => e.exception_status === "excess").length > 0 && (
+                <span className="text-[10px] bg-orange-900/30 text-orange-300 px-1.5 py-0.5 rounded">
+                  {exceptions.filter((e) => e.exception_status === "excess").length} excess
+                </span>
+              )}
+            </div>
+            <span className="text-slate-500 text-xs">{showExceptions ? "▴ collapse" : "▾ expand"}</span>
+          </button>
+          {showExceptions && (
+            <div className="overflow-auto border-t border-slate-700">
+              <table className="w-full text-xs text-slate-300">
+                <thead>
+                  <tr className="border-b border-slate-700 text-slate-400 bg-slate-800/80">
+                    {["Status", "Product", "Channel", "Week", "Fwd Coverage", "Lead Time", "EOP"].map((h) => (
+                      <th key={h} className={`px-3 py-2 font-medium ${h === "Product" ? "text-left" : "text-right"}`}>{h}</th>
+                    ))}
+                    <th className="px-3 py-2 font-medium text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exceptions.map((ex) => (
+                    <tr key={`${ex.hierarchy_code}_${ex.channel}_${ex.current_week}`} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                      <td className="px-3 py-1.5 text-right">
+                        {ex.exception_status === "critical" && <span className="text-red-400 font-semibold">⚠ Stockout</span>}
+                        {ex.exception_status === "low"      && <span className="text-amber-400">↓ Low</span>}
+                        {ex.exception_status === "excess"   && <span className="text-orange-400">↑ Excess</span>}
+                      </td>
+                      <td className="px-3 py-1.5 text-left text-white">{ex.l2_name}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-400">{ex.channel}</td>
+                      <td className="px-3 py-1.5 text-right font-mono">{ex.current_week}</td>
+                      <td className={`px-3 py-1.5 text-right font-semibold ${ex.exception_status === "critical" ? "text-red-400" : ex.exception_status === "low" ? "text-amber-400" : "text-orange-400"}`}>
+                        {ex.coverage_wks} wks
+                      </td>
+                      <td className="px-3 py-1.5 text-right text-slate-400">{ex.lead_time_weeks} wks</td>
+                      <td className="px-3 py-1.5 text-right">{fmtU(ex.eop_units)}</td>
+                      <td className="px-3 py-1.5 text-right">
+                        <button
+                          onClick={() => {
+                            setSelectedHcs([String(ex.hierarchy_code)]);
+                            setSelectedChannels([ex.channel]);
+                            setShowExceptions(false);
+                          }}
+                          className="text-[10px] bg-blue-800 hover:bg-blue-700 text-blue-200 px-2 py-0.5 rounded transition-colors"
+                        >View →</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -1413,6 +1603,50 @@ export default function WPPage() {
         )}
       </div>
 
+      {/* ── Audit Log slide-in panel ── */}
+      {showAuditLog && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => setShowAuditLog(false)} />
+          <div className="fixed right-0 top-0 h-full w-[480px] bg-slate-900 border-l border-slate-700 p-5 overflow-auto z-50 flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold text-white">Change Log</h2>
+              <div className="flex gap-2">
+                <button onClick={() => fetchAuditLog(100).then(setAuditLog)} className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded border border-slate-700 transition-colors">↻ Refresh</button>
+                <button onClick={() => setShowAuditLog(false)} className="text-slate-400 hover:text-white text-lg">✕</button>
+              </div>
+            </div>
+            {auditLog.length === 0 ? (
+              <p className="text-xs text-slate-500">No edits recorded yet. Changes appear here as you edit cells.</p>
+            ) : (
+              <div className="space-y-1 flex-1 overflow-auto">
+                {auditLog.map((entry) => {
+                  const skuInfo = filters.hierarchies.find((h) => h.hierarchy_code === entry.hierarchy_code);
+                  return (
+                    <div key={entry.id} className="bg-slate-800 border border-slate-700 rounded px-3 py-2">
+                      <div className="flex items-center justify-between gap-2 mb-0.5">
+                        <span className="text-[10px] text-slate-500 font-mono">{entry.timestamp.replace("T", " ")}</span>
+                        <span className="text-[10px] text-slate-500 font-mono">Wk{String(entry.current_week).slice(-2)}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                        <span className="text-slate-300 font-medium">{skuInfo?.l2_name ?? `HC ${entry.hierarchy_code}`}</span>
+                        <span className="text-slate-500">×</span>
+                        <span className="text-slate-400">{entry.channel}</span>
+                        <span className="text-slate-600">·</span>
+                        <span className="text-blue-300">{entry.field.replace("written_", "")}</span>
+                        <span className="text-slate-600">·</span>
+                        <span className="text-slate-500">{entry.old_value ?? "base"}</span>
+                        <span className="text-slate-600">→</span>
+                        <span className="text-amber-300 font-semibold">{entry.new_value}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       {/* ── Snapshots slide-in panel ── */}
       {showSnapshots && (
         <>
@@ -1425,11 +1659,40 @@ export default function WPPage() {
             {snapshots.length === 0 ? (
               <p className="text-xs text-slate-500">No snapshots saved yet. Edit some values and click "Save Snapshot."</p>
             ) : (
+              <>
+                {compareIds.length > 0 && (
+                  <div className="mb-3 p-2 bg-slate-800 border border-violet-800 rounded-lg">
+                    <div className="text-[10px] text-violet-400 mb-1.5">
+                      {compareIds.length === 1 ? "Select 1 more snapshot to compare" : "Ready to compare 2 snapshots"}
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={handleCompare} disabled={compareIds.length !== 2 || compareLoading}
+                        className="text-xs bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors"
+                      >{compareLoading ? "Loading…" : "Compare A vs B →"}</button>
+                      <button onClick={() => { setCompareIds([]); setCompareData(null); }}
+                        className="text-xs text-slate-500 hover:text-red-400 transition-colors"
+                      >Clear</button>
+                    </div>
+                  </div>
+                )}
               <div className="space-y-3 flex-1 overflow-auto">
-                {[...snapshots].reverse().map((s) => (
-                  <div key={s.id} className="bg-slate-800 border border-slate-700 rounded-lg p-3">
+                {[...snapshots].reverse().map((s) => {
+                  const cIdx = compareIds.indexOf(s.id);
+                  return (
+                  <div key={s.id} className={`bg-slate-800 border rounded-lg p-3 ${cIdx >= 0 ? "border-violet-600" : "border-slate-700"}`}>
                     <div className="flex items-start justify-between gap-2 mb-1">
-                      <div className="font-medium text-white text-sm">{s.name}</div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => toggleCompareSnap(s.id)}
+                          title="Select for A/B comparison"
+                          className={`w-5 h-5 rounded border text-[10px] font-bold transition-colors flex items-center justify-center ${
+                            cIdx === 0 ? "bg-violet-600 border-violet-500 text-white" :
+                            cIdx === 1 ? "bg-indigo-600 border-indigo-500 text-white" :
+                            "border-slate-600 text-slate-500 hover:border-violet-500"
+                          }`}
+                        >{cIdx === 0 ? "A" : cIdx === 1 ? "B" : "○"}</button>
+                        <div className="font-medium text-white text-sm">{s.name}</div>
+                      </div>
                       <button
                         onClick={() => handleDeleteSnapshot(s.id)}
                         title="Delete snapshot"
@@ -1461,8 +1724,10 @@ export default function WPPage() {
                       Restore this snapshot
                     </button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
+              </>
             )}
             {baselineSummary && (
               <div className="mt-4 pt-4 border-t border-slate-700">
@@ -1480,6 +1745,88 @@ export default function WPPage() {
                 </div>
               </div>
             )}
+          </div>
+        </>
+      )}
+
+      {/* ── Snapshot Comparison panel ── */}
+      {compareData && (
+        <>
+          <div className="fixed inset-0 bg-black/50 z-50" onClick={() => setCompareData(null)} />
+          <div className="fixed inset-4 bg-slate-900 border border-slate-700 rounded-xl z-50 flex flex-col overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-700 flex items-center justify-between flex-shrink-0">
+              <div>
+                <h2 className="font-semibold text-white text-lg">
+                  <span className="text-violet-400">{compareData.snap_a.name}</span>
+                  <span className="text-slate-500 mx-2">vs</span>
+                  <span className="text-indigo-400">{compareData.snap_b.name}</span>
+                </h2>
+                <div className="flex flex-wrap gap-6 mt-2 text-xs text-slate-400">
+                  {[
+                    { label: "Sales U", a: compareData.summary.a_sales_units,   b: compareData.summary.b_sales_units,   fmt: (v: number) => fmtU(v), isDollar: false },
+                    { label: "Sales $", a: compareData.summary.a_sales_dollars, b: compareData.summary.b_sales_dollars, fmt: (v: number) => fmtD(v), isDollar: true  },
+                    { label: "GM $",    a: compareData.summary.a_gm_dollar,     b: compareData.summary.b_gm_dollar,     fmt: (v: number) => fmtD(v), isDollar: true  },
+                  ].map(({ label, a, b, fmt }) => {
+                    const delta = b - a;
+                    return (
+                      <div key={label}>
+                        <span className="text-slate-500">{label}: </span>
+                        <span className="text-violet-300">{fmt(a)}</span>
+                        <span className="text-slate-600 mx-1">→</span>
+                        <span className="text-indigo-300">{fmt(b)}</span>
+                        <span className={`ml-1 font-semibold ${delta > 0 ? "text-emerald-400" : delta < 0 ? "text-red-400" : "text-slate-500"}`}>
+                          ({delta >= 0 ? "+" : ""}{fmt(delta)})
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <button onClick={() => setCompareData(null)} className="text-slate-400 hover:text-white text-xl flex-shrink-0">✕</button>
+            </div>
+            <div className="flex-1 overflow-auto">
+              <table className="w-full text-xs text-slate-300">
+                <thead className="sticky top-0 bg-slate-900 border-b border-slate-700 z-10">
+                  <tr className="text-slate-400">
+                    {["Week","Product","Ch","A Sales U","B Sales U","Δ U","A Sales $","B Sales $","Δ $","A GM $","B GM $","Δ GM","Δ EOP"].map((h, i) => (
+                      <th key={h} className={`px-3 py-2 font-medium whitespace-nowrap ${i < 3 ? "text-left" : "text-right"} ${h.startsWith("A ") ? "text-violet-400" : h.startsWith("B ") ? "text-indigo-400" : ""}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {compareData.rows
+                    .filter((r) => r.delta_sales_units !== 0 || r.delta_sales_dollars !== 0 || r.delta_eop !== 0)
+                    .map((r) => (
+                    <tr key={`${r.hierarchy_code}_${r.channel}_${r.current_week}`} className="border-b border-slate-800 hover:bg-slate-800/50">
+                      <td className="px-3 py-1.5 font-mono text-slate-400">{r.current_week}</td>
+                      <td className="px-3 py-1.5 text-slate-200 whitespace-nowrap">{r.l2_name}</td>
+                      <td className="px-3 py-1.5 text-slate-400">{r.channel}</td>
+                      <td className="px-3 py-1.5 text-right text-violet-300">{fmtU(r.a_sales_units)}</td>
+                      <td className="px-3 py-1.5 text-right text-indigo-300">{fmtU(r.b_sales_units)}</td>
+                      <td className={`px-3 py-1.5 text-right font-semibold ${r.delta_sales_units > 0 ? "text-emerald-400" : r.delta_sales_units < 0 ? "text-red-400" : "text-slate-600"}`}>
+                        {r.delta_sales_units > 0 ? "+" : ""}{fmtU(r.delta_sales_units)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right text-violet-300">{fmtD(r.a_sales_dollars)}</td>
+                      <td className="px-3 py-1.5 text-right text-indigo-300">{fmtD(r.b_sales_dollars)}</td>
+                      <td className={`px-3 py-1.5 text-right font-semibold ${r.delta_sales_dollars > 0 ? "text-emerald-400" : r.delta_sales_dollars < 0 ? "text-red-400" : "text-slate-600"}`}>
+                        {r.delta_sales_dollars > 0 ? "+" : ""}{fmtD(r.delta_sales_dollars)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right text-violet-300">{fmtD(r.a_gm_dollar)}</td>
+                      <td className="px-3 py-1.5 text-right text-indigo-300">{fmtD(r.b_gm_dollar)}</td>
+                      <td className={`px-3 py-1.5 text-right font-semibold ${r.delta_gm_dollar > 0 ? "text-emerald-400" : r.delta_gm_dollar < 0 ? "text-red-400" : "text-slate-600"}`}>
+                        {r.delta_gm_dollar > 0 ? "+" : ""}{fmtD(r.delta_gm_dollar)}
+                      </td>
+                      <td className={`px-3 py-1.5 text-right ${r.delta_eop > 0 ? "text-blue-400" : r.delta_eop < 0 ? "text-orange-400" : "text-slate-600"}`}>
+                        {r.delta_eop > 0 ? "+" : ""}{fmtU(r.delta_eop)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="px-4 py-2 border-t border-slate-800 text-[10px] text-slate-600 flex-shrink-0">
+              Only rows with differences shown · Sales / GM / EOP values are accurate · WOS uses current demand plan
+            </div>
           </div>
         </>
       )}

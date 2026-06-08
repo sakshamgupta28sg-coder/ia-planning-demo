@@ -8,6 +8,8 @@ from dummy_data import (
     get_effective_metrics, update_sku_setting, EDITABLE_SKU_FIELDS,
     get_target_wos, update_channel_target_wos, _CHANNEL_TARGET_WOS,
     clear_single_override, accept_recomm_receipts,
+    compare_snapshots, get_exceptions_panel,
+    get_budget, set_budget, get_audit_log,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -376,9 +378,47 @@ def accept_recomm(body: AcceptRecommRequest):
     return {"applied": count}
 
 
+# ── Exception panel ───────────────────────────────────────────────────────────
+@router.get("/exceptions")
+def get_exceptions():
+    """All planning-week rows with non-ok coverage status, for the exception panel."""
+    return get_exceptions_panel()
+
+
+# ── Audit log ─────────────────────────────────────────────────────────────────
+@router.get("/audit")
+def get_audit(limit: int = 100):
+    """Most-recent cell edits, newest first."""
+    return get_audit_log(min(limit, 500))
+
+
+# ── OTB Budget ────────────────────────────────────────────────────────────────
+class BudgetRequest(BaseModel):
+    budget: float = Field(ge=0)
+
+
+@router.get("/budget")
+def read_budget():
+    return get_budget()
+
+
+@router.put("/budget")
+def write_budget(body: BudgetRequest):
+    return set_budget(body.budget)
+
+
 # ── Snapshots ─────────────────────────────────────────────────────────────────
 class SnapshotRequest(BaseModel):
     name: str
+
+
+@router.get("/snapshots/compare")
+def snapshot_compare(a: int, b: int):
+    """Side-by-side week-level comparison of two saved snapshots."""
+    result = compare_snapshots(a, b)
+    if not result:
+        raise HTTPException(404, "One or both snapshots not found")
+    return result
 
 
 @router.get("/snapshots")

@@ -176,6 +176,37 @@ export async function undoRowOverride(hierarchy_code: number, current_week: numb
   return res.json();
 }
 
+export async function compareSnapshots(a: number, b: number) {
+  const res = await fetch(`${BASE}/wp/snapshots/compare?a=${a}&b=${b}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchExceptions() {
+  const res = await fetch(`${BASE}/wp/exceptions`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function fetchAuditLog(limit = 100) {
+  const res = await fetch(`${BASE}/wp/audit?limit=${limit}`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function fetchBudget() {
+  const res = await fetch(`${BASE}/wp/budget`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function updateBudget(budget: number) {
+  const res = await fetch(`${BASE}/wp/budget`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ budget }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function acceptRecomm(body: { hierarchy_codes: number[]; channels: string[] }) {
   const res = await fetch(`${BASE}/wp/accept-recomm`, {
     method: "POST",

@@ -56,6 +56,24 @@ def init_db():
                 data            TEXT    NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp       TEXT    NOT NULL,
+                hierarchy_code  INTEGER NOT NULL,
+                channel         TEXT    NOT NULL,
+                current_week    INTEGER NOT NULL,
+                field           TEXT    NOT NULL,
+                old_value       TEXT,
+                new_value       TEXT    NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key     TEXT PRIMARY KEY,
+                value   TEXT NOT NULL
+            )
+        """)
         conn.commit()
 
 
@@ -249,6 +267,51 @@ def db_insert_new_sku(hierarchy_code: int, data: Dict):
         conn.execute(
             "INSERT OR REPLACE INTO new_skus (hierarchy_code, data) VALUES (?, ?)",
             (hierarchy_code, json.dumps(payload)),
+        )
+        conn.commit()
+
+
+def db_log_audit(hierarchy_code: int, channel: str, current_week: int,
+                 field: str, old_value, new_value) -> None:
+    """Append one audit entry. old_value may be None (no prior override)."""
+    from datetime import datetime as _dt
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO audit_log "
+            "(timestamp, hierarchy_code, channel, current_week, field, old_value, new_value) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (_dt.now().isoformat(timespec="seconds"),
+             hierarchy_code, channel, current_week, field,
+             str(old_value) if old_value is not None else None,
+             str(new_value)),
+        )
+        conn.commit()
+
+
+def db_get_audit_log(limit: int = 100) -> List[Dict]:
+    """Return most-recent audit entries (newest first)."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, timestamp, hierarchy_code, channel, current_week, "
+            "field, old_value, new_value "
+            "FROM audit_log ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def db_get_setting(key: str, default=None):
+    """Return a settings value or default if not set."""
+    with _conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def db_set_setting(key: str, value: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value),
         )
         conn.commit()
 
