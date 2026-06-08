@@ -1202,8 +1202,6 @@ export default function WPPage() {
                         className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}
                         title={r.fwd_coverage_wks != null ? `Fwd Coverage: ${r.fwd_coverage_wks.toFixed(1)} wks (incl. OO pipeline)` : undefined}
                       >{r.wos ?? "—"}</td>
-                      <td className="px-3 py-1.5 text-right text-cyan-400">{fmtU(r.otb_units)}</td>
-                      <td className="px-3 py-1.5 text-right text-cyan-400">{fmtD(r.otb_dollars)}</td>
                       <td className="px-3 py-1.5 text-right">
                         <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified} locked={locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "on_order_placed_total_unit", v)} />
@@ -1240,7 +1238,7 @@ export default function WPPage() {
           <div className="px-4 py-2 border-t border-slate-700 flex flex-wrap gap-4 text-[10px] text-slate-500">
             <span><span className="inline-block w-2 h-2 rounded-full bg-violet-400 mr-1" />● past week (actuals available, locked)</span>
             <span>⚡ ongoing week (in-flight, locked)</span>
-            <span>WOS: <span className="text-red-400">red</span> &lt;2 · <span className="text-amber-400">amber</span> &gt;14 · <span className="text-emerald-400">green</span> healthy</span>
+            <span>WOS: <span className="text-red-400">red</span> critical/excess · <span className="text-amber-400">amber</span> low/high · <span className="text-emerald-400">green</span> healthy (relative to lead time)</span>
             <span>🔒 = cell cannot be edited</span>
           </div>
         )}

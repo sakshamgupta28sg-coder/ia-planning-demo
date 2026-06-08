@@ -150,7 +150,9 @@ def _compute_recomm_receipt(hc: int, ch: str, wk: int, eop_units: int) -> int:
     fwd_demand = _FORWARD_DEMAND_INDEX.get((hc, ch, wk), 0)
     if fwd_demand <= 0:
         return 0
-    weekly_avg = fwd_demand / look_ahead
+    # Use 8-week forward avg (same denominator as Pass 1b and WOS) so target_eop is consistent.
+    wos_fwd   = _WOS_DEMAND_INDEX.get((hc, ch, wk), 0)
+    weekly_avg = wos_fwd / WOS_WINDOW if WOS_WINDOW > 0 else 0
     target_eop = round(weekly_avg * get_target_wos(hc, ch))
     pipeline = _PIPELINE_INDEX.get((hc, ch, wk), 0)
     raw = max(0, fwd_demand + target_eop - eop_units - pipeline)
@@ -880,6 +882,9 @@ def restore_snapshot(snap_id: int) -> bool:
     if not snap:
         return False
     db_replace_overrides(snap["overrides"])
+    # Rebuild demand + pipeline indexes so recomm reflects snapshot's sales/OO state.
+    # Without this, _FORWARD_DEMAND_INDEX/_PIPELINE_INDEX stay stale until server restart.
+    _rebuild_fwd_demand_and_recomm([h["hierarchy_code"] for h in HIERARCHIES])
     return True
 
 
@@ -964,6 +969,14 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
 
             # Rebuild demand + pipeline indexes for all weeks of this SKU×channel
             lt = m["lead_time_weeks"]
+            # Build oo_ovr once (not inside the 52-week loop) — same content every iteration.
+            oo_ovr = {
+                r["current_week"]: overrides.get(
+                    _ovr_key(hc, r["current_week"], ch), {}
+                ).get("on_order_placed_total_unit", r["on_order_placed_total_unit"])
+                for r in WP_DATA
+                if r["hierarchy_code"] == hc and r["channel"] == ch
+            }
             for wk in FISCAL_WEEKS:
                 idx = wk_pos[wk]
                 _FORWARD_DEMAND_INDEX[(hc, ch, wk)] = sum(
@@ -974,15 +987,6 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
                     eff_units.get(fw, 0)
                     for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
                 )
-                # Pipeline = OO Placed in WP_DATA for next lead_time weeks
-                # (overridden OO rows take precedence via the overrides dict)
-                oo_ovr = {
-                    r["current_week"]: overrides.get(
-                        _ovr_key(hc, r["current_week"], ch), {}
-                    ).get("on_order_placed_total_unit", r["on_order_placed_total_unit"])
-                    for r in WP_DATA
-                    if r["hierarchy_code"] == hc and r["channel"] == ch
-                }
                 _PIPELINE_INDEX[(hc, ch, wk)] = sum(
                     oo_ovr.get(fw, 0)
                     for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
