@@ -4,9 +4,10 @@ from typing import Optional
 from dummy_data import (
     WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, CURRENT_WEEK, CATEGORIES,
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
-    get_all_snapshots, apply_top_down,
+    get_all_snapshots, apply_top_down, preview_top_down,
     get_effective_metrics, update_sku_setting, EDITABLE_SKU_FIELDS,
     get_target_wos, update_channel_target_wos, _CHANNEL_TARGET_WOS,
+    clear_single_override, accept_recomm_receipts,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -178,16 +179,44 @@ def get_portfolio():
                 "written_sales_dollars": 0.0,
                 "written_gm_dollar":   0.0,
                 "_modified":           False,
+                # Exception tracking (populated below)
+                "_planning_coverages": [],
             }
         per_hc[hc]["written_sales_units"]   += r["written_sales_units"]
         per_hc[hc]["written_sales_dollars"]  = round(per_hc[hc]["written_sales_dollars"] + r["written_sales_dollars"], 2)
         per_hc[hc]["written_gm_dollar"]      = round(per_hc[hc]["written_gm_dollar"]      + r["written_gm_dollar"], 2)
         if r["_modified"]:
             per_hc[hc]["_modified"] = True
+        # Collect coverage values from planning weeks for exception flagging
+        if not r.get("actualised") and not r.get("is_ongoing"):
+            cov = r.get("fwd_coverage_wks") if r.get("fwd_coverage_wks") is not None else r.get("wos")
+            if cov is not None:
+                per_hc[hc]["_planning_coverages"].append(cov)
 
     for b in per_hc.values():
         td = b["written_sales_dollars"]
         b["avg_gm_perc"] = round(b["written_gm_dollar"] / td, 4) if td else 0
+
+        # Derive exception status from worst planning-week coverage vs lead time
+        covs = b.pop("_planning_coverages")
+        if covs:
+            hc    = b["hierarchy_code"]
+            lt    = get_effective_metrics(hc)["lead_time_weeks"]
+            mn    = min(covs)
+            mx    = max(covs)
+            if mn < lt * 0.5:
+                status = "critical"
+            elif mn < lt:
+                status = "low"
+            elif mx > lt * 3:
+                status = "excess"
+            else:
+                status = "ok"
+            b["exception_status"]   = status
+            b["min_coverage_wks"]   = round(mn, 1)
+        else:
+            b["exception_status"]   = "ok"
+            b["min_coverage_wks"]   = None
 
     return sorted(per_hc.values(), key=lambda x: x["hierarchy_code"])
 
@@ -286,12 +315,35 @@ def clear_overrides():
     return {"reset": True}
 
 
+@router.delete("/overrides/{hierarchy_code}/{current_week}/{channel}")
+def clear_row_override(hierarchy_code: int, current_week: int, channel: str):
+    """Undo edits to a single week×SKU×channel cell — restores to baseline."""
+    row = clear_single_override(hierarchy_code, current_week, channel)
+    if not row:
+        raise HTTPException(404, "Row not found")
+    return row
+
+
 # ── Top-down distribution ─────────────────────────────────────────────────────
 class TopDownRequest(BaseModel):
     hierarchy_codes: list
     channels: list
     target: float = Field(gt=0, description="Total target to distribute across planning weeks")
     field: str = "written_sales_units"
+
+
+@router.post("/top-down/preview")
+def top_down_preview(body: TopDownRequest):
+    """Dry-run: returns proposed per-week values without writing to DB."""
+    allowed = {"written_sales_units", "written_sales_dollars"}
+    if body.field not in allowed:
+        raise HTTPException(400, f"field must be one of {allowed}")
+    return preview_top_down(
+        [int(hc) for hc in body.hierarchy_codes],
+        list(body.channels),
+        body.target,
+        body.field,
+    )
 
 
 @router.post("/top-down")
@@ -306,6 +358,22 @@ def top_down_distribute(body: TopDownRequest):
         body.field,
     )
     return {"applied": count, "current_week": CURRENT_WEEK}
+
+
+# ── Accept Recomm ─────────────────────────────────────────────────────────────
+class AcceptRecommRequest(BaseModel):
+    hierarchy_codes: list
+    channels: list
+
+
+@router.post("/accept-recomm")
+def accept_recomm(body: AcceptRecommRequest):
+    """Set OO Placed = Recomm Receipt for all planning weeks of the given SKUs×channels."""
+    count = accept_recomm_receipts(
+        [int(hc) for hc in body.hierarchy_codes],
+        list(body.channels),
+    )
+    return {"applied": count}
 
 
 # ── Snapshots ─────────────────────────────────────────────────────────────────

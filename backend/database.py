@@ -115,6 +115,14 @@ def db_upsert_override(key: str, data: Dict):
         conn.commit()
 
 
+def db_delete_override(key: str) -> bool:
+    """Delete a single override entry by key. Returns True if a row was deleted."""
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM overrides WHERE key = ?", (key,))
+        conn.commit()
+    return cur.rowcount > 0
+
+
 def db_clear_overrides():
     """Delete all overrides (reset)."""
     with _conn() as conn:

@@ -440,6 +440,7 @@ from database import (
     db_get_all_sku_settings, db_upsert_sku_setting,
     db_get_all_channel_settings, db_upsert_channel_setting,
     db_get_all_new_skus, db_get_max_new_sku_hc, db_insert_new_sku, db_delete_new_sku,
+    db_delete_override,
 )
 
 init_db()  # create tables on first import; no-op if already exist
@@ -1191,6 +1192,108 @@ def _reset_fwd_demand_and_recomm():
                 r["hierarchy_code"], r["channel"], r["current_week"],
                 r["eop_units"],
             )
+
+
+def clear_single_override(hc: int, wk: int, ch: str) -> Dict:
+    """Remove override for one cell. Rebuilds indexes if demand/OO changed. Returns fresh row."""
+    key = _ovr_key(hc, wk, ch)
+    overrides = db_get_overrides()
+    if key in overrides:
+        last_edited = overrides[key].get("_last_edited")
+        db_delete_override(key)
+        if last_edited in ("written_sales_units", "written_sales_dollars", "written_dr_perc"):
+            _rebuild_fwd_demand_and_recomm([hc], [ch])
+        elif last_edited == "on_order_placed_total_unit":
+            _rebuild_pipeline_and_recomm([hc], [ch])
+    rows = get_agg_rows(hc, ch)
+    return next((r for r in rows if r["current_week"] == wk), {})
+
+
+def accept_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
+    """Set OO Placed = Recomm Receipt for all planning weeks of given SKUs×channels.
+
+    One-click replacement for manually editing OO Placed week-by-week.
+    Returns count of rows updated.
+    """
+    overrides = db_get_overrides()
+    updates: Dict[str, Dict] = {}
+    count = 0
+    for hc in hcs:
+        for ch in channels:
+            for r in get_agg_rows(hc, ch):
+                if r.get("actualised") or r.get("is_ongoing"):
+                    continue
+                recomm = int(r.get("recomm_receipt_units", 0))
+                key = _ovr_key(hc, r["current_week"], ch)
+                entry = dict(overrides.get(key, {}))
+                entry["on_order_placed_total_unit"] = float(recomm)
+                entry["_last_edited"] = "on_order_placed_total_unit"
+                updates[key] = entry
+                count += 1
+    if updates:
+        db_batch_upsert_overrides(updates)
+        _rebuild_pipeline_and_recomm(hcs, channels)
+    return count
+
+
+def preview_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> Dict:
+    """Dry-run of apply_top_down — same weight logic, no DB writes.
+
+    Returns per-week proposed values and an aggregated summary so the
+    frontend can show a confirmation step before committing.
+    """
+    ly_field  = "ly_units"  if field == "written_sales_units" else "ly_dollars"
+    lly_field = "lly_units" if field == "written_sales_units" else "lly_dollars"
+
+    ly_map:  Dict[str, float] = {}
+    lly_map: Dict[str, float] = {}
+    for r in TY_LY_DATA:
+        if r["hierarchy_code"] not in hcs or r["channel"] not in channels:
+            continue
+        k = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+        ly_map[k]  = float(r.get(ly_field,  0) or 0)
+        lly_map[k] = float(r.get(lly_field, 0) or 0)
+
+    planning_rows: List[Dict] = []
+    for hc in hcs:
+        for ch in channels:
+            for r in get_agg_rows(hc, ch):
+                if not r["actualised"] and not r.get("is_ongoing", False):
+                    planning_rows.append(r)
+
+    if not planning_rows:
+        return {"rows": [], "current_total": 0, "proposed_total": 0, "weeks": 0}
+
+    weights: List[float] = []
+    for r in planning_rows:
+        k = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+        w = ly_map.get(k, 0.0)
+        if w <= 0: w = lly_map.get(k, 0.0)
+        if w <= 0: w = float(r.get(field, 0) or 0)
+        weights.append(w)
+
+    total_w = sum(weights)
+    rows_out = []
+    for r, w in zip(planning_rows, weights):
+        share   = (w / total_w) if total_w > 0 else (1 / len(planning_rows))
+        proposed = round(target * share) if field == "written_sales_units" else round(target * share, 2)
+        rows_out.append({
+            "hierarchy_code": r["hierarchy_code"],
+            "channel":        r["channel"],
+            "current_week":   r["current_week"],
+            "current":        r.get(field, 0),
+            "proposed":       proposed,
+            "weight_pct":     round(share * 100, 2),
+        })
+
+    current_total = sum(r.get(field, 0) for r in planning_rows)
+    return {
+        "rows":           rows_out,
+        "current_total":  round(current_total, 2),
+        "proposed_total": round(target, 2),
+        "weeks":          len({r["current_week"] for r in planning_rows}),
+        "field":          field,
+    }
 
 
 def apply_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> int:

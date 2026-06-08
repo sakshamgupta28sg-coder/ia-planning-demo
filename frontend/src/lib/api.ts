@@ -152,3 +152,36 @@ export async function topDownDistribute(body: {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function previewTopDown(body: {
+  hierarchy_codes: number[];
+  channels: string[];
+  target: number;
+  field: string;
+}) {
+  const res = await fetch(`${BASE}/wp/top-down/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function undoRowOverride(hierarchy_code: number, current_week: number, channel: string) {
+  const res = await fetch(`${BASE}/wp/overrides/${hierarchy_code}/${current_week}/${channel}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function acceptRecomm(body: { hierarchy_codes: number[]; channels: string[] }) {
+  const res = await fetch(`${BASE}/wp/accept-recomm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

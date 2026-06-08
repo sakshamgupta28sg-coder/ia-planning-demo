@@ -3,8 +3,9 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import {
   fetchWPByWeek, fetchWPSummary, fetchWPFilters, fetchPortfolio,
   editWPRow, resetOverrides, fetchSnapshots, saveSnapshotAPI, restoreSnapshotAPI, deleteSnapshotAPI,
-  topDownDistribute, fetchSKUSettings, updateSKUSetting,
+  topDownDistribute, previewTopDown, fetchSKUSettings, updateSKUSetting,
   fetchTargetWOS, updateTargetWOS,
+  undoRowOverride, acceptRecomm,
 } from "@/lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -45,6 +46,15 @@ type PortfolioRow = {
   hierarchy_code: number; l1_name: string; l2_name: string;
   written_sales_units: number; written_sales_dollars: number;
   written_gm_dollar: number; avg_gm_perc: number; _modified: boolean;
+  exception_status: "ok" | "low" | "critical" | "excess";
+  min_coverage_wks: number | null;
+};
+type TopDownPreview = {
+  rows: { hierarchy_code: number; channel: string; current_week: number; current: number; proposed: number; weight_pct: number }[];
+  current_total: number;
+  proposed_total: number;
+  weeks: number;
+  field: string;
 };
 type Summary = { total_written_sales_units: number; total_written_sales_dollars: number; total_written_gm_dollar: number; avg_written_gm_perc: number };
 type Snapshot = { id: number; name: string; created_at: string; overrides_count: number; summary: { total_sales_units: number; total_sales_dollars: number; total_gm_dollar: number; avg_gm_perc: number } };
@@ -198,6 +208,53 @@ function EditableNumber({
   );
 }
 
+// ── EditablePercent ───────────────────────────────────────────────────────────
+// Like EditableNumber but stores 0–1, displays as %, edits as 0–100 input.
+function EditablePercent({
+  value, onCommit, isModified, locked = false, mode,
+}: { value: number; onCommit: (v: number, mode: string) => void; isModified?: boolean; locked?: boolean; mode: string }) {
+  const [editing, setEditing] = useState(false);
+  const [inputVal, setInputVal] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  if (locked) {
+    return (
+      <span className="text-slate-600 select-none" title="Locked — actualised or ongoing week">
+        {pct(value)}<span className="ml-0.5 text-[9px]">🔒</span>
+      </span>
+    );
+  }
+
+  function startEdit() { setInputVal((value * 100).toFixed(1)); setEditing(true); }
+  function commit() {
+    setEditing(false);
+    const num = parseFloat(inputVal);
+    if (!isNaN(num) && num >= 0 && num <= 100 && num / 100 !== value) onCommit(num / 100, mode);
+  }
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef} type="number" value={inputVal} min={0} max={100} step={0.1}
+        onChange={(e) => setInputVal(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
+        className="w-16 bg-slate-900 text-white text-right px-1 py-0 text-xs border border-blue-400 rounded outline-none"
+      />
+    );
+  }
+  return (
+    <span
+      onClick={startEdit}
+      title={`Disc% — Click to edit\nMode: ${mode === "hold_units" ? "Hold Units ($ recalcs)" : "Hold $ (Units back-calc)"}`}
+      className={`cursor-pointer rounded px-1 py-0.5 hover:bg-slate-600 transition-colors select-none ${isModified ? "text-amber-300 font-semibold" : "text-blue-300"}`}
+    >
+      {pct(value)}<span className="ml-0.5 text-slate-500 text-[9px]">✎</span>
+    </span>
+  );
+}
+
 // ── Delta badge ───────────────────────────────────────────────────────────────
 function Delta({ current, baseline, isDollar = false }: { current: number; baseline: number; isDollar?: boolean }) {
   const diff = current - baseline;
@@ -229,6 +286,8 @@ export default function WPPage() {
   const [topDownTarget, setTopDownTarget] = useState("");
   const [topDownField, setTopDownField] = useState<"written_sales_units" | "written_sales_dollars">("written_sales_units");
   const [topDownLoading, setTopDownLoading] = useState(false);
+  const [topDownPreview, setTopDownPreview] = useState<TopDownPreview | null>(null);
+  const [acceptRecommLoading, setAcceptRecommLoading] = useState(false);
   const [skuSettings, setSkuSettings] = useState<Record<number, SKUSetting>>({});
   const [discPctMode, setDiscPctMode] = useState<"hold_units" | "hold_dollars">("hold_units");
   const [chartCombo, setChartCombo] = useState<string>("");
@@ -378,10 +437,30 @@ export default function WPPage() {
     setSnapshots((prev) => prev.filter((s) => s.id !== id));
   }
 
+  async function handleTopDownPreview() {
+    const target = parseFloat(topDownTarget);
+    if (isNaN(target) || target <= 0) return;
+    setTopDownLoading(true);
+    try {
+      const preview = await previewTopDown({
+        hierarchy_codes: selectedHcs.map(Number),
+        channels: selectedChannels,
+        target,
+        field: topDownField,
+      });
+      setTopDownPreview(preview);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Preview failed");
+    } finally {
+      setTopDownLoading(false);
+    }
+  }
+
   async function handleTopDown() {
     const target = parseFloat(topDownTarget);
     if (isNaN(target) || target <= 0) return;
     setTopDownLoading(true);
+    setTopDownPreview(null);
     try {
       await topDownDistribute({
         hierarchy_codes: selectedHcs.map(Number),
@@ -395,6 +474,40 @@ export default function WPPage() {
       setEditError(e instanceof Error ? e.message : "Top-down failed");
     } finally {
       setTopDownLoading(false);
+    }
+  }
+
+  async function undoSingleRow(hc: number, channel: string, week: number) {
+    setEditError("");
+    try {
+      const updated = await undoRowOverride(hc, week, channel);
+      setRows((prev) =>
+        prev.map((r) =>
+          r.current_week === week && r.hierarchy_code === hc && r.channel === channel
+            ? { ...r, ...updated }
+            : r
+        )
+      );
+      reloadPortfolioAndSummary();
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Undo failed");
+    }
+  }
+
+  async function handleAcceptRecomm() {
+    if (!canEdit) return;
+    setAcceptRecommLoading(true);
+    setEditError("");
+    try {
+      await acceptRecomm({
+        hierarchy_codes: selectedHcs.map(Number),
+        channels: selectedChannels,
+      });
+      await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Accept recomm failed");
+    } finally {
+      setAcceptRecommLoading(false);
     }
   }
 
@@ -746,7 +859,7 @@ export default function WPPage() {
         <table className="w-full text-xs text-slate-300">
           <thead>
             <tr className="border-b border-slate-700 text-slate-400">
-              {["", "SKU", "Product", "Sales Units", "Sales $", "GM $", "GM %", "Lead Time ✎ (wks)", "Case Pack ✎ (units)", "Status"].map((h) => (
+              {["", "SKU", "Product", "Sales Units", "Sales $", "GM $", "GM %", "Lead Time ✎", "Case Pack ✎", "Safety Wks ✎", "Target WOS ✎", "Health"].map((h) => (
                 <th key={h} className={`px-3 py-2 font-medium ${h === "" || h === "SKU" || h === "Product" ? "text-left" : "text-right"} ${h.includes("✎") ? "text-blue-400" : ""}`}>{h}</th>
               ))}
             </tr>
@@ -786,6 +899,8 @@ export default function WPPage() {
                   <td className="px-3 py-1.5 text-right font-semibold text-slate-200">{fmtD(dollars)}</td>
                   <td className="px-3 py-1.5 text-right font-semibold text-emerald-400">{fmtD(gm)}</td>
                   <td className="px-3 py-1.5 text-right font-semibold">{pct(gmPerc)}</td>
+                  <td className="px-3 py-1.5 text-right text-slate-600 text-[10px]">—</td>
+                  <td className="px-3 py-1.5 text-right text-slate-600 text-[10px]">—</td>
                   <td className="px-3 py-1.5 text-right text-slate-600 text-[10px]">—</td>
                   <td className="px-3 py-1.5 text-right text-slate-600 text-[10px]">—</td>
                   <td className="px-3 py-1.5 text-right">
@@ -837,10 +952,29 @@ export default function WPPage() {
                           onCommit={(v) => handleSKUSettingEdit(p.hierarchy_code, "case_pack", v)}
                         />
                       </td>
+                      <td className="px-3 py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
+                        <EditableNumber
+                          value={skuSettings[p.hierarchy_code]?.safety_weeks ?? 0}
+                          onCommit={(v) => handleSKUSettingEdit(p.hierarchy_code, "safety_weeks", v)}
+                        />
+                      </td>
+                      <td className="px-3 py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
+                        <EditableNumber
+                          value={skuSettings[p.hierarchy_code]?.target_wos ?? 0}
+                          onCommit={(v) => handleSKUSettingEdit(p.hierarchy_code, "target_wos", v)}
+                        />
+                      </td>
                       <td className="px-3 py-1.5 text-right">
-                        {p._modified
-                          ? <span className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">Modified</span>
-                          : <span className="text-slate-600 text-[10px]">—</span>}
+                        {(() => {
+                          const es = (p as PortfolioRow).exception_status;
+                          const mc = (p as PortfolioRow).min_coverage_wks;
+                          const tip = mc != null ? `Worst coverage: ${mc} wks` : "";
+                          if (es === "critical") return <span title={tip} className="text-red-400 bg-red-900/30 px-1.5 py-0.5 rounded text-[10px] font-semibold">⚠ Stockout risk</span>;
+                          if (es === "low")      return <span title={tip} className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">↓ Low stock</span>;
+                          if (es === "excess")   return <span title={tip} className="text-orange-400 bg-orange-900/20 px-1.5 py-0.5 rounded text-[10px]">↑ Excess</span>;
+                          if (p._modified)       return <span className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">Modified</span>;
+                          return <span className="text-emerald-500 text-[10px]">✓ Healthy</span>;
+                        })()}
                       </td>
                     </tr>
                   );
@@ -946,33 +1080,65 @@ export default function WPPage() {
             <span className="text-xs text-slate-400 font-medium">↓ Top-down:</span>
             <input
               value={topDownTarget}
-              onChange={(e) => setTopDownTarget(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleTopDown()}
+              onChange={(e) => { setTopDownTarget(e.target.value); setTopDownPreview(null); }}
+              onKeyDown={(e) => e.key === "Enter" && handleTopDownPreview()}
               placeholder="Total target…"
               className="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded px-2 py-1 w-32 outline-none focus:border-emerald-500"
             />
             <div className="flex rounded overflow-hidden border border-slate-600 text-xs">
-              <button
-                onClick={() => setTopDownField("written_sales_units")}
+              <button onClick={() => setTopDownField("written_sales_units")}
                 className={`px-3 py-1 transition-colors ${topDownField === "written_sales_units" ? "bg-emerald-700 text-white" : "bg-slate-800 text-slate-400 hover:text-white"}`}
-                title="Distribute as total units"
               >Units</button>
-              <button
-                onClick={() => setTopDownField("written_sales_dollars")}
+              <button onClick={() => setTopDownField("written_sales_dollars")}
                 className={`px-3 py-1 transition-colors border-l border-slate-600 ${topDownField === "written_sales_dollars" ? "bg-emerald-700 text-white" : "bg-slate-800 text-slate-400 hover:text-white"}`}
-                title="Distribute as total sales dollars"
               >$</button>
             </div>
-            <button
-              onClick={handleTopDown}
-              disabled={!topDownTarget.trim() || topDownLoading}
-              className="text-xs bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors"
-            >
-              {topDownLoading ? "Applying…" : "Distribute"}
-            </button>
-            <span className="text-[10px] text-slate-600">
-              Distributes total across planning weeks · LY → LLY → plan weights
-            </span>
+            <button onClick={handleTopDownPreview} disabled={!topDownTarget.trim() || topDownLoading}
+              className="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white px-3 py-1 rounded border border-slate-500 transition-colors"
+            >{topDownLoading ? "Loading…" : "Preview"}</button>
+            <span className="text-slate-600 text-[10px]">then confirm →</span>
+            <button onClick={handleAcceptRecomm} disabled={acceptRecommLoading || !canEdit}
+              className="text-xs bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors ml-2"
+              title="Set OO Placed = Recomm Receipt for all planning weeks"
+            >{acceptRecommLoading ? "Applying…" : "✓ Accept Recomm"}</button>
+          </div>
+        )}
+        {/* Top-down preview confirmation panel */}
+        {topDownPreview && (
+          <div className="px-4 py-3 border-b border-emerald-800 bg-emerald-950/40 flex flex-wrap items-start gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-emerald-400 font-semibold mb-1">
+                Preview — distributing {topDownPreview.field === "written_sales_units" ? fmtU(topDownPreview.proposed_total) + " units" : fmtD(topDownPreview.proposed_total)} across {topDownPreview.weeks} planning weeks
+              </div>
+              <div className="text-[10px] text-slate-400">
+                Current total: {topDownPreview.field === "written_sales_units" ? fmtU(topDownPreview.current_total) : fmtD(topDownPreview.current_total)} →
+                Proposed: {topDownPreview.field === "written_sales_units" ? fmtU(topDownPreview.proposed_total) : fmtD(topDownPreview.proposed_total)}
+                {" "}({topDownPreview.proposed_total > topDownPreview.current_total ? "+" : ""}{topDownPreview.field === "written_sales_units"
+                  ? fmtU(topDownPreview.proposed_total - topDownPreview.current_total)
+                  : fmtD(topDownPreview.proposed_total - topDownPreview.current_total)})
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 max-h-16 overflow-auto">
+                {Object.entries(
+                  topDownPreview.rows.reduce((acc, r) => {
+                    acc[r.current_week] = (acc[r.current_week] ?? 0) + r.proposed;
+                    return acc;
+                  }, {} as Record<number, number>)
+                ).slice(0, 16).map(([wk, val]) => (
+                  <span key={wk} className="text-[10px] text-slate-400">
+                    Wk{String(wk).slice(-2)}: <span className="text-emerald-300">{topDownPreview.field === "written_sales_units" ? fmtU(val) : fmtD(val)}</span>
+                  </span>
+                ))}
+                {topDownPreview.weeks > 16 && <span className="text-[10px] text-slate-600">+{topDownPreview.weeks - 16} more…</span>}
+              </div>
+            </div>
+            <div className="flex gap-2 items-start">
+              <button onClick={handleTopDown} disabled={topDownLoading}
+                className="text-xs bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white px-4 py-1.5 rounded transition-colors font-medium"
+              >{topDownLoading ? "Applying…" : "✓ Confirm & Apply"}</button>
+              <button onClick={() => { setTopDownPreview(null); setTopDownTarget(""); }}
+                className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-1.5 rounded transition-colors"
+              >Cancel</button>
+            </div>
           </div>
         )}
 
@@ -1078,9 +1244,9 @@ export default function WPPage() {
                 {/* ── INVENTORY tab ── */}
                 {activeTab === "inventory" && [
                   { l: "Week", left: true }, { l: "Product", left: true }, { l: "Channel", left: true },
-                  { l: "BOP" }, { l: "EOP" }, { l: "WOS" },
+                  { l: "BOP" }, { l: "EOP" }, { l: "WOS" }, { l: "Fwd Cov" },
                   { l: "OO Placed ✎", edit: true },
-                  { l: "Rcpt Total" }, { l: "Recomm Rcpt" },
+                  { l: "Rcpt Total" }, { l: "Recomm Rcpt" }, { l: "Order Gap" },
                 ].map((h) => (
                   <th key={h.l} className={`px-3 py-2 font-medium whitespace-nowrap ${h.left ? "text-left" : "text-right"} ${h.edit ? "text-blue-400" : ""}`}>{h.l}</th>
                 ))}
@@ -1102,7 +1268,14 @@ export default function WPPage() {
                 const baseClass = `transition-colors ${weekBg} hover:brightness-110 border-b border-slate-700/50`;
                 const wk = (
                   <td className={`px-3 py-1.5 font-mono ${r._modified ? "text-amber-400" : "text-slate-400"}`}>
-                    {r.current_week}{r._modified && <span className="ml-1 text-[9px]">✎</span>}
+                    {r.current_week}
+                    {r._modified && (
+                      <button
+                        onClick={() => undoSingleRow(r.hierarchy_code, r.channel, r.current_week)}
+                        title="Undo edits to this week"
+                        className="ml-1 text-[9px] text-amber-400 hover:text-red-400 transition-colors"
+                      >✎↩</button>
+                    )}
                     {r.actualised && <span className="ml-1 text-[9px] text-violet-400">●</span>}
                     {r.is_ongoing && <span className="ml-1 text-[9px] text-orange-400">⚡</span>}
                   </td>
@@ -1131,26 +1304,13 @@ export default function WPPage() {
                       {/* Pricing block: AIR → Disc% → Disc$ → AUR */}
                       <td className="px-3 py-1.5 text-right text-slate-400" title="Unit List Price (from input files)">{r.written_air.toFixed(2)}</td>
                       <td className="px-3 py-1.5 text-right">
-                        {locked ? (
-                          <span className="text-slate-600">{pct(r.written_dr_perc)}<span className="ml-0.5 text-[9px]">🔒</span></span>
-                        ) : (
-                          <span
-                            title={`Disc% — Click to edit\nMode: ${discPctMode === "hold_units" ? "Hold Units ($ recalcs)" : "Hold $ (Units back-calc)"}`}
-                            className={`cursor-pointer rounded px-1 py-0.5 hover:bg-slate-600 transition-colors select-none ${r._modified ? "text-amber-300 font-semibold" : "text-blue-300"}`}
-                            onClick={() => {
-                              const input = prompt(
-                                `Disc% for wk ${r.current_week}\nMode: ${discPctMode === "hold_units" ? "Hold Units" : "Hold $"}\nCurrent: ${(r.written_dr_perc * 100).toFixed(1)}%\nEnter new % (0–100):`,
-                                (r.written_dr_perc * 100).toFixed(1)
-                              );
-                              if (input === null) return;
-                              const pctVal = parseFloat(input);
-                              if (isNaN(pctVal) || pctVal < 0 || pctVal > 100) return;
-                              handleEdit(r.hierarchy_code, r.channel, r.current_week, "written_dr_perc", pctVal / 100, discPctMode);
-                            }}
-                          >
-                            {pct(r.written_dr_perc)}<span className="ml-0.5 text-slate-500 text-[9px]">✎</span>
-                          </span>
-                        )}
+                        <EditablePercent
+                          value={r.written_dr_perc}
+                          isModified={r._modified}
+                          locked={locked}
+                          mode={discPctMode}
+                          onCommit={(v, mode) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "written_dr_perc", v, mode)}
+                        />
                       </td>
                       <td className="px-3 py-1.5 text-right text-orange-300" title="Discount $ = Units × AIR × Disc%">{fmtD(r.written_discount_dollars)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-300" title="AUR = AIR × (1 − Disc%)">{r.written_aur.toFixed(2)}</td>
@@ -1198,16 +1358,25 @@ export default function WPPage() {
                     {activeTab === "inventory" && <>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.bop_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
-                      <td
-                        className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}
-                        title={r.fwd_coverage_wks != null ? `Fwd Coverage: ${r.fwd_coverage_wks.toFixed(1)} wks (incl. OO pipeline)` : undefined}
-                      >{r.wos ?? "—"}</td>
+                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}>
+                        {r.wos ?? "—"}
+                      </td>
+                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}
+                          title="Forward Coverage = (EOP + OO pipeline next lead-time weeks) / 8wk avg">
+                        {r.fwd_coverage_wks != null ? r.fwd_coverage_wks.toFixed(1) : "—"}
+                      </td>
                       <td className="px-3 py-1.5 text-right">
                         <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified} locked={locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "on_order_placed_total_unit", v)} />
                       </td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.total_receipt_units)}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
+                      <td className={`px-3 py-1.5 text-right font-medium ${
+                        Math.max(0, r.recomm_receipt_units - r.on_order_placed_total_unit) > 0
+                          ? "text-amber-400" : "text-slate-600"
+                      }`} title="Order Gap = max(0, Recomm − OO Placed) — units still needed">
+                        {fmtU(Math.max(0, r.recomm_receipt_units - r.on_order_placed_total_unit))}
+                      </td>
                     </>}
 
                     {/* ── LY / LLY ── */}
