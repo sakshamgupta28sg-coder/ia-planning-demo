@@ -1234,6 +1234,73 @@ def clear_single_override(hc: int, wk: int, ch: str) -> Dict:
     return next((r for r in rows if r["current_week"] == wk), {})
 
 
+def shift_receipts(hcs: List[int], channels: List[str], shift_weeks: int) -> Dict:
+    """Shift all OO Placed values for given SKUs×channels by N fiscal weeks.
+
+    Positive shift_weeks = push later (supplier delay).
+    Negative shift_weeks = pull earlier (accelerate delivery).
+    OOs that would land outside the planning window are dropped.
+
+    Returns: {"shifted": count, "dropped": count}
+    """
+    if shift_weeks == 0:
+        return {"shifted": 0, "dropped": 0}
+
+    planning_wks = {w for w in FISCAL_WEEKS if w > CURRENT_WEEK}
+    overrides = db_get_overrides()
+    updates: Dict[str, Dict] = {}
+
+    shifted = 0
+    dropped = 0
+
+    for hc in hcs:
+        for ch in channels:
+            # Collect current OO for planning weeks (from live agg rows so overrides are reflected)
+            oo_by_week: Dict[int, float] = {}
+            for r in get_agg_rows(hc, ch):
+                if r["current_week"] in planning_wks:
+                    oo = float(r.get("on_order_placed_total_unit", 0))
+                    if oo > 0:
+                        oo_by_week[r["current_week"]] = oo
+
+            if not oo_by_week:
+                continue
+
+            # Build destination mapping
+            new_oo: Dict[int, float] = {}
+            for src_wk, oo in oo_by_week.items():
+                try:
+                    src_idx = FISCAL_WEEKS.index(src_wk)
+                except ValueError:
+                    dropped += 1
+                    continue
+                dst_idx = src_idx + shift_weeks
+                if 0 <= dst_idx < len(FISCAL_WEEKS):
+                    dst_wk = FISCAL_WEEKS[dst_idx]
+                    if dst_wk in planning_wks:
+                        new_oo[dst_wk] = new_oo.get(dst_wk, 0.0) + oo
+                        shifted += 1
+                    else:
+                        dropped += 1
+                else:
+                    dropped += 1
+
+            # Write zero to all source weeks, then new values to destination weeks
+            all_affected = planning_wks & (set(oo_by_week) | set(new_oo))
+            for wk in all_affected:
+                key = _ovr_key(hc, wk, ch)
+                entry = dict(overrides.get(key, {}))
+                entry["on_order_placed_total_unit"] = float(round(new_oo.get(wk, 0.0)))
+                entry["_last_edited"] = "on_order_placed_total_unit"
+                updates[key] = entry
+
+    if updates:
+        db_batch_upsert_overrides(updates)
+        _rebuild_pipeline_and_recomm(hcs, channels)
+
+    return {"shifted": shifted, "dropped": dropped}
+
+
 def accept_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
     """Set OO Placed = Recomm Receipt for all planning weeks of given SKUs×channels.
 
@@ -1428,10 +1495,11 @@ def get_exceptions_panel() -> List[Dict]:
         cov = r.get("fwd_coverage_wks") if r.get("fwd_coverage_wks") is not None else r.get("wos")
         if cov is None:
             continue
+        order_gap = max(0, r.get("recomm_receipt_units", 0) - r.get("on_order_placed_total_unit", 0))
         if cov < lt * 0.5:
-            status = "critical"
-        elif cov < lt:
-            status = "low"
+            status = "critical"            # genuine stockout risk regardless of OO
+        elif cov < lt and order_gap > 0:
+            status = "low"                 # below LT AND there's an actionable order gap
         elif cov > lt * 3:
             status = "excess"
         else:
@@ -1469,23 +1537,29 @@ def get_exceptions_panel() -> List[Dict]:
 
 
 def get_budget() -> Dict:
-    """Return OTB receipt budget and current plan consumption."""
+    """Return OTB receipt budget, current plan consumption, and category breakdown."""
     budget_str = db_get_setting("otb_budget")
     budget = float(budget_str) if budget_str else 0.0
-    # Planned receipt cost = sum(total_receipt_units × auc) for all planning + ongoing weeks
-    planned_cost = sum(
-        r["total_receipt_units"] * r.get("written_auc", 0)
-        for r in get_agg_rows()
-        if not r.get("actualised")
-    )
+
+    planned_cost = 0.0
+    category_costs: Dict[str, float] = {}
+    for r in get_agg_rows():
+        if not r.get("actualised"):
+            cost = r["total_receipt_units"] * r.get("written_auc", 0)
+            planned_cost += cost
+            cat = r.get("l1_name", "Other")
+            category_costs[cat] = category_costs.get(cat, 0.0) + cost
+
     planned_cost = round(planned_cost, 2)
+    category_breakdown = {cat: round(v, 2) for cat, v in sorted(category_costs.items())}
     remaining = round(budget - planned_cost, 2) if budget > 0 else None
     pct_consumed = round(planned_cost / budget, 4) if budget > 0 else None
     return {
-        "budget":        budget,
-        "planned_cost":  planned_cost,
-        "remaining":     remaining,
-        "pct_consumed":  pct_consumed,
+        "budget":             budget,
+        "planned_cost":       planned_cost,
+        "remaining":          remaining,
+        "pct_consumed":       pct_consumed,
+        "category_breakdown": category_breakdown,
     }
 
 
@@ -1494,8 +1568,8 @@ def set_budget(value: float) -> Dict:
     return get_budget()
 
 
-def get_audit_log(limit: int = 100) -> List[Dict]:
-    return db_get_audit_log(limit)
+def get_audit_log(limit: int = 100, hierarchy_code: int = None, field: str = None) -> List[Dict]:
+    return db_get_audit_log(limit, hierarchy_code=hierarchy_code, field=field)
 
 
 def get_season_progress() -> Dict:
@@ -1519,12 +1593,17 @@ def get_season_progress() -> Dict:
     }
 
 
-def apply_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> int:
+def apply_top_down(hcs: List[int], channels: List[str], target: float, field: str,
+                   week_values: List[Dict] = None) -> int:
     """
     Distribute `target` across all planning weeks (not actualised, not ongoing)
     for the given HCs × channels.
 
-    Weight basis (per week/hc/channel cell):
+    If week_values is provided (list of {hierarchy_code, channel, current_week, value}),
+    those explicit values are applied directly — skipping the LY-weight computation.
+    This supports the "edit preview values then confirm" UX pattern.
+
+    Weight basis (when week_values not provided):
       1st priority – LY value for that cell
       2nd priority – LLY value (if LY == 0)
       3rd priority – current plan value (if LY == 0 AND LLY == 0)
@@ -1557,44 +1636,61 @@ def apply_top_down(hcs: List[int], channels: List[str], target: float, field: st
     if not planning_rows:
         return 0
 
-    # Compute weights using LY → LLY → current plan fallback
-    weights: List[float] = []
-    for r in planning_rows:
-        k = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
-        w = ly_map.get(k, 0.0)
-        if w <= 0:
-            w = lly_map.get(k, 0.0)
-        if w <= 0:
-            w = float(r.get(field, 0) or 0)
-        weights.append(w)
-
-    total_w = sum(weights)
-    if total_w <= 0:
-        return 0
-
-    # Compute new values proportionally
     all_overrides = db_get_overrides()
     updates: Dict[str, Dict] = {}
-    for r, w in zip(planning_rows, weights):
-        new_val = (w / total_w) * target
-        # Round same as apply_edit (OBS-02)
-        if field in ("written_sales_units", "on_order_placed_total_unit"):
-            new_val = float(round(new_val))
-        else:
-            new_val = round(new_val, 2)
 
-        key = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
-        entry = dict(all_overrides.get(key, {}))
-        entry[field] = new_val
-        entry["_last_edited"] = field
-        updates[key] = entry
+    if week_values:
+        # Direct application — frontend already computed per-row values
+        value_map = {
+            _ovr_key(wv["hierarchy_code"], wv["current_week"], wv["channel"]): wv["value"]
+            for wv in week_values
+        }
+        for r in planning_rows:
+            key = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+            if key not in value_map:
+                continue
+            new_val = value_map[key]
+            if field in ("written_sales_units", "on_order_placed_total_unit"):
+                new_val = float(round(new_val))
+            else:
+                new_val = round(new_val, 2)
+            entry = dict(all_overrides.get(key, {}))
+            entry[field] = new_val
+            entry["_last_edited"] = field
+            updates[key] = entry
+    else:
+        # Compute weights using LY → LLY → current plan fallback
+        weights: List[float] = []
+        for r in planning_rows:
+            k = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+            w = ly_map.get(k, 0.0)
+            if w <= 0:
+                w = lly_map.get(k, 0.0)
+            if w <= 0:
+                w = float(r.get(field, 0) or 0)
+            weights.append(w)
+
+        total_w = sum(weights)
+        if total_w <= 0:
+            return 0
+
+        for r, w in zip(planning_rows, weights):
+            new_val = (w / total_w) * target
+            if field in ("written_sales_units", "on_order_placed_total_unit"):
+                new_val = float(round(new_val))
+            else:
+                new_val = round(new_val, 2)
+            key = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+            entry = dict(all_overrides.get(key, {}))
+            entry[field] = new_val
+            entry["_last_edited"] = field
+            updates[key] = entry
 
     # One DB transaction for all writes
     db_batch_upsert_overrides(updates)
 
     # Rebuild forward demand index + recomm for affected SKUs so recomm stays consistent
-    # Both units and dollars edits change effective demand (dollars → back-calc units via _recalc)
     if field in ("written_sales_units", "written_sales_dollars"):
         _rebuild_fwd_demand_and_recomm(hcs, channels)
 
-    return len(planning_rows)
+    return len(updates)

@@ -143,8 +143,23 @@ export async function topDownDistribute(body: {
   channels: string[];
   target: number;
   field: string;
+  week_values?: { hierarchy_code: number; channel: string; current_week: number; value: number }[];
 }) {
   const res = await fetch(`${BASE}/wp/top-down`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function bulkShiftReceipts(body: {
+  hierarchy_codes: number[];
+  channels: string[];
+  shift_weeks: number;
+}) {
+  const res = await fetch(`${BASE}/wp/bulk-shift`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -187,8 +202,11 @@ export async function fetchExceptions() {
   return res.json();
 }
 
-export async function fetchAuditLog(limit = 100) {
-  const res = await fetch(`${BASE}/wp/audit?limit=${limit}`, { cache: "no-store" });
+export async function fetchAuditLog(limit = 100, hierarchy_code?: number, field?: string) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (hierarchy_code !== undefined) params.set("hierarchy_code", String(hierarchy_code));
+  if (field) params.set("field", field);
+  const res = await fetch(`${BASE}/wp/audit?${params}`, { cache: "no-store" });
   return res.json();
 }
 

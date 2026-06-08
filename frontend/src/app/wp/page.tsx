@@ -5,7 +5,7 @@ import {
   editWPRow, resetOverrides, fetchSnapshots, saveSnapshotAPI, restoreSnapshotAPI, deleteSnapshotAPI,
   topDownDistribute, previewTopDown, fetchSKUSettings, updateSKUSetting,
   fetchTargetWOS, updateTargetWOS,
-  undoRowOverride, acceptRecomm,
+  undoRowOverride, acceptRecomm, bulkShiftReceipts,
   compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget, updateBudget,
   fetchSeasonProgress, renameSnapshotAPI,
 } from "@/lib/api";
@@ -67,6 +67,7 @@ type AuditEntry = {
 };
 type BudgetData = {
   budget: number; planned_cost: number; remaining: number | null; pct_consumed: number | null;
+  category_breakdown?: Record<string, number>;
 };
 type SnapCompare = {
   snap_a: { id: number; name: string; created_at: string };
@@ -398,6 +399,14 @@ export default function WPPage() {
   // Snapshot rename
   const [renamingSnapId, setRenamingSnapId] = useState<number | null>(null);
   const [renameInput, setRenameInput] = useState("");
+  // Bulk shift
+  const [shiftWeeks, setShiftWeeks] = useState("1");
+  const [shiftLoading, setShiftLoading] = useState(false);
+  // Top-down: editable per-week values (key = "{hc}_{ch}_{wk}")
+  const [weekValueOverrides, setWeekValueOverrides] = useState<Record<string, number>>({});
+  // Audit log filters
+  const [auditHcFilter, setAuditHcFilter] = useState<string>("");
+  const [auditFieldFilter, setAuditFieldFilter] = useState<string>("");
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
@@ -619,18 +628,49 @@ export default function WPPage() {
     setTopDownLoading(true);
     setTopDownPreview(null);
     try {
+      // If user edited any week values in preview, send those; else use LY weights
+      const overrideEntries = Object.entries(weekValueOverrides);
+      const week_values = overrideEntries.length > 0
+        ? overrideEntries.map(([key, value]) => {
+            const [hc, ch, wk] = key.split("__");
+            return { hierarchy_code: Number(hc), channel: ch, current_week: Number(wk), value };
+          })
+        : undefined;
       await topDownDistribute({
         hierarchy_codes: selectedHcs.map(Number),
         channels: selectedChannels,
         target,
         field: topDownField,
+        week_values,
       });
       await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
       setTopDownTarget("");
+      setWeekValueOverrides({});
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "Top-down failed");
     } finally {
       setTopDownLoading(false);
+    }
+  }
+
+  async function handleBulkShift(dir: 1 | -1) {
+    const n = parseInt(shiftWeeks, 10);
+    if (isNaN(n) || n <= 0 || !canEdit) return;
+    const shift = n * dir;
+    setShiftLoading(true);
+    setEditError("");
+    try {
+      const result = await bulkShiftReceipts({
+        hierarchy_codes: selectedHcs.map(Number),
+        channels: selectedChannels,
+        shift_weeks: shift,
+      });
+      await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
+      showToast(`Shifted ${result.shifted} receipts ${dir > 0 ? "+" : ""}${shift} wks${result.dropped > 0 ? ` · ${result.dropped} dropped (out of range)` : ""}`);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Shift failed");
+    } finally {
+      setShiftLoading(false);
     }
   }
 
@@ -1097,6 +1137,29 @@ export default function WPPage() {
             ) : (
               <div className="text-sm text-slate-500 mt-1">No budget set</div>
             )}
+            {/* Category breakdown */}
+            {budgetData?.category_breakdown && Object.keys(budgetData.category_breakdown).length > 0 && (
+              <div className="mt-2 space-y-0.5">
+                {Object.entries(budgetData.category_breakdown).map(([cat, cost]) => {
+                  const catPct = budgetData.planned_cost > 0 ? cost / budgetData.planned_cost : 0;
+                  const catBudget = budgetData.budget > 0 ? cost / budgetData.budget : 0;
+                  return (
+                    <div key={cat} className="text-[9px]">
+                      <div className="flex justify-between text-slate-500 mb-0.5">
+                        <span>{cat}</span>
+                        <span className={catBudget > 1 ? "text-red-400" : "text-slate-400"}>{fmtD(cost)} <span className="text-slate-600">({(catPct * 100).toFixed(0)}%)</span></span>
+                      </div>
+                      <div className="h-0.5 bg-slate-700 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${catBudget > 1 ? "bg-red-500" : catBudget > 0.85 ? "bg-amber-500" : "bg-blue-500"}`}
+                          style={{ width: `${Math.min(catBudget * 100, 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <div className="flex gap-1 mt-2">
               <input
                 value={budgetInput}
@@ -1425,7 +1488,7 @@ export default function WPPage() {
             <span className="text-xs text-slate-400 font-medium">↓ Top-down:</span>
             <input
               value={topDownTarget}
-              onChange={(e) => { setTopDownTarget(e.target.value); setTopDownPreview(null); }}
+              onChange={(e) => { setTopDownTarget(e.target.value); setTopDownPreview(null); setWeekValueOverrides({}); }}
               onKeyDown={(e) => e.key === "Enter" && handleTopDownPreview()}
               placeholder="Total target…"
               className="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded px-2 py-1 w-32 outline-none focus:border-emerald-500"
@@ -1462,27 +1525,67 @@ export default function WPPage() {
                   ? fmtU(topDownPreview.proposed_total - topDownPreview.current_total)
                   : fmtD(topDownPreview.proposed_total - topDownPreview.current_total)})
               </div>
-              <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 max-h-24 overflow-auto">
+              <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 max-h-32 overflow-auto">
                 {Object.entries(
                   topDownPreview.rows.reduce((acc, r) => {
-                    if (!acc[r.current_week]) acc[r.current_week] = { val: 0, wt: 0 };
+                    if (!acc[r.current_week]) acc[r.current_week] = { val: 0, wt: 0, rows: [] };
                     acc[r.current_week].val += r.proposed;
                     acc[r.current_week].wt  += r.weight_pct;
+                    acc[r.current_week].rows.push(r);
                     return acc;
-                  }, {} as Record<number, { val: number; wt: number }>)
-                ).map(([wk, { val, wt }]) => (
-                  <span key={wk} className="text-[10px] text-slate-400">
-                    Wk{String(wk).slice(-2)}: <span className="text-emerald-300">{topDownPreview.field === "written_sales_units" ? fmtU(val) : fmtD(val)}</span>
-                    <span className="text-slate-600 ml-0.5">({wt.toFixed(1)}%)</span>
-                  </span>
-                ))}
+                  }, {} as Record<number, { val: number; wt: number; rows: typeof topDownPreview.rows }>)
+                ).map(([wk, { val, wt, rows: wkRows }]) => {
+                  const ovKey = `wk__${wk}`;
+                  const ovVal = weekValueOverrides[ovKey];
+                  const displayVal = ovVal !== undefined ? ovVal : val;
+                  return (
+                    <span key={wk} className="inline-flex items-center gap-1 text-[10px]">
+                      <span className="text-slate-500">Wk{String(wk).slice(-2)}</span>
+                      <input
+                        type="number"
+                        value={ovVal !== undefined ? ovVal : Math.round(displayVal)}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          if (!isNaN(v) && v >= 0) {
+                            setWeekValueOverrides((prev) => {
+                              const next = { ...prev, [ovKey]: v };
+                              // Also store per-row keys for the backend
+                              wkRows.forEach((r) => {
+                                const rKey = `${r.hierarchy_code}__${r.channel}__${r.current_week}`;
+                                // Distribute evenly across rows for this week if multiple
+                                next[rKey] = v / wkRows.length;
+                              });
+                              return next;
+                            });
+                          }
+                        }}
+                        className="w-16 bg-slate-800 border border-slate-600 text-emerald-300 text-[10px] rounded px-1 py-0.5 outline-none focus:border-emerald-500"
+                        title="Edit to override this week's value"
+                      />
+                      <span className="text-slate-600">({wt.toFixed(1)}%)</span>
+                      {ovVal !== undefined && (
+                        <button onClick={() => setWeekValueOverrides((prev) => {
+                          const next = { ...prev };
+                          delete next[ovKey];
+                          wkRows.forEach((r) => delete next[`${r.hierarchy_code}__${r.channel}__${r.current_week}`]);
+                          return next;
+                        })} className="text-slate-600 hover:text-red-400 text-[9px]">✕</button>
+                      )}
+                    </span>
+                  );
+                })}
               </div>
+              {Object.keys(weekValueOverrides).filter(k => k.startsWith("wk__")).length > 0 && (
+                <div className="text-[10px] text-amber-400 mt-1">
+                  ✎ {Object.keys(weekValueOverrides).filter(k => k.startsWith("wk__")).length} week{Object.keys(weekValueOverrides).filter(k => k.startsWith("wk__")).length !== 1 ? "s" : ""} overridden · click ✕ to revert individual weeks
+                </div>
+              )}
             </div>
             <div className="flex gap-2 items-start">
               <button onClick={handleTopDown} disabled={topDownLoading}
                 className="text-xs bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white px-4 py-1.5 rounded transition-colors font-medium"
               >{topDownLoading ? "Applying…" : "✓ Confirm & Apply"}</button>
-              <button onClick={() => { setTopDownPreview(null); setTopDownTarget(""); }}
+              <button onClick={() => { setTopDownPreview(null); setTopDownTarget(""); setWeekValueOverrides({}); }}
                 className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-1.5 rounded transition-colors"
               >Cancel</button>
             </div>
@@ -1523,6 +1626,38 @@ export default function WPPage() {
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Bulk receipt shift toolbar (inventory tab only) */}
+        {canEdit && activeTab === "inventory" && (
+          <div className="px-4 py-2 border-b border-slate-700 flex flex-wrap items-center gap-3 bg-slate-800/30">
+            <span className="text-xs text-slate-400 font-medium">Shift receipts:</span>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => handleBulkShift(-1)}
+                disabled={shiftLoading}
+                title="Pull receipts earlier"
+                className="text-xs bg-slate-700 hover:bg-blue-700 disabled:opacity-40 text-slate-200 px-2.5 py-1 rounded transition-colors"
+              >← Earlier</button>
+              <input
+                type="number"
+                min={1}
+                max={26}
+                value={shiftWeeks}
+                onChange={(e) => setShiftWeeks(e.target.value)}
+                className="w-12 bg-slate-900 border border-slate-700 text-slate-200 text-xs text-center rounded px-1 py-1 outline-none focus:border-blue-500"
+              />
+              <span className="text-xs text-slate-500">wks</span>
+              <button
+                onClick={() => handleBulkShift(1)}
+                disabled={shiftLoading}
+                title="Push receipts later (supplier delay)"
+                className="text-xs bg-slate-700 hover:bg-amber-700 disabled:opacity-40 text-slate-200 px-2.5 py-1 rounded transition-colors"
+              >Later →</button>
+            </div>
+            <span className="text-[10px] text-slate-600">moves all OO Placed for selected SKUs×channels</span>
+            {shiftLoading && <span className="text-xs text-slate-400">Shifting…</span>}
           </div>
         )}
 
@@ -1765,12 +1900,53 @@ export default function WPPage() {
         <>
           <div className="fixed inset-0 bg-black/40 z-40" onClick={() => setShowAuditLog(false)} />
           <div className="fixed right-0 top-0 h-full w-[480px] bg-slate-900 border-l border-slate-700 p-5 overflow-auto z-50 flex flex-col">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold text-white">Change Log</h2>
               <div className="flex gap-2">
-                <button onClick={() => fetchAuditLog(100).then(setAuditLog)} className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded border border-slate-700 transition-colors">↻ Refresh</button>
+                <button
+                  onClick={() => fetchAuditLog(200, auditHcFilter ? Number(auditHcFilter) : undefined, auditFieldFilter || undefined).then(setAuditLog)}
+                  className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded border border-slate-700 transition-colors"
+                >↻ Refresh</button>
                 <button onClick={() => setShowAuditLog(false)} className="text-slate-400 hover:text-white text-lg">✕</button>
               </div>
+            </div>
+            {/* Filters */}
+            <div className="flex gap-2 mb-3 flex-wrap">
+              <select
+                value={auditHcFilter}
+                onChange={(e) => {
+                  setAuditHcFilter(e.target.value);
+                  fetchAuditLog(200, e.target.value ? Number(e.target.value) : undefined, auditFieldFilter || undefined).then(setAuditLog);
+                }}
+                className="bg-slate-800 border border-slate-700 text-xs text-slate-300 rounded px-2 py-1 outline-none flex-1 min-w-0"
+              >
+                <option value="">All products</option>
+                {filters.hierarchies.map((h) => (
+                  <option key={h.hierarchy_code} value={h.hierarchy_code}>{h.sku_code} · {h.l2_name}</option>
+                ))}
+              </select>
+              <select
+                value={auditFieldFilter}
+                onChange={(e) => {
+                  setAuditFieldFilter(e.target.value);
+                  fetchAuditLog(200, auditHcFilter ? Number(auditHcFilter) : undefined, e.target.value || undefined).then(setAuditLog);
+                }}
+                className="bg-slate-800 border border-slate-700 text-xs text-slate-300 rounded px-2 py-1 outline-none flex-1 min-w-0"
+              >
+                <option value="">All fields</option>
+                {Object.entries(FIELD_LABELS).map(([k, v]) => (
+                  <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+              {(auditHcFilter || auditFieldFilter) && (
+                <button
+                  onClick={() => {
+                    setAuditHcFilter(""); setAuditFieldFilter("");
+                    fetchAuditLog(200).then(setAuditLog);
+                  }}
+                  className="text-[10px] text-slate-500 hover:text-red-400 transition-colors"
+                >✕ Clear</button>
+              )}
             </div>
             {auditLog.length === 0 ? (
               <p className="text-xs text-slate-500">No edits recorded yet. Changes appear here as you edit cells.</p>

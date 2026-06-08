@@ -7,7 +7,7 @@ from dummy_data import (
     rename_snapshot, get_all_snapshots, apply_top_down, preview_top_down,
     get_effective_metrics, update_sku_setting, EDITABLE_SKU_FIELDS,
     get_target_wos, update_channel_target_wos, _CHANNEL_TARGET_WOS,
-    clear_single_override, accept_recomm_receipts,
+    clear_single_override, accept_recomm_receipts, shift_receipts,
     compare_snapshots, get_exceptions_panel,
     get_budget, set_budget, get_audit_log, get_season_progress,
 )
@@ -335,11 +335,19 @@ def clear_row_override(hierarchy_code: int, current_week: int, channel: str):
 
 
 # ── Top-down distribution ─────────────────────────────────────────────────────
+class WeekValueItem(BaseModel):
+    hierarchy_code: int
+    channel: str
+    current_week: int
+    value: float
+
+
 class TopDownRequest(BaseModel):
     hierarchy_codes: list
     channels: list
     target: float = Field(gt=0, description="Total target to distribute across planning weeks")
     field: str = "written_sales_units"
+    week_values: Optional[list] = None  # list of WeekValueItem dicts — skips LY weight calc
 
 
 @router.post("/top-down/preview")
@@ -366,8 +374,29 @@ def top_down_distribute(body: TopDownRequest):
         list(body.channels),
         body.target,
         body.field,
+        week_values=body.week_values,
     )
     return {"applied": count, "current_week": CURRENT_WEEK}
+
+
+# ── Bulk receipt shift ────────────────────────────────────────────────────────
+class BulkShiftRequest(BaseModel):
+    hierarchy_codes: list
+    channels: list
+    shift_weeks: int = Field(description="Positive = push later, negative = pull earlier")
+
+
+@router.post("/bulk-shift")
+def bulk_shift(body: BulkShiftRequest):
+    """Shift all OO Placed receipts for given SKUs×channels by N fiscal weeks."""
+    if body.shift_weeks == 0:
+        return {"shifted": 0, "dropped": 0}
+    result = shift_receipts(
+        [int(hc) for hc in body.hierarchy_codes],
+        list(body.channels),
+        body.shift_weeks,
+    )
+    return result
 
 
 # ── Accept Recomm ─────────────────────────────────────────────────────────────
@@ -395,9 +424,9 @@ def get_exceptions():
 
 # ── Audit log ─────────────────────────────────────────────────────────────────
 @router.get("/audit")
-def get_audit(limit: int = 100):
-    """Most-recent cell edits, newest first."""
-    return get_audit_log(min(limit, 500))
+def get_audit(limit: int = 100, hierarchy_code: Optional[int] = None, field: Optional[str] = None):
+    """Most-recent cell edits, newest first. Optional SKU and field filters."""
+    return get_audit_log(min(limit, 500), hierarchy_code=hierarchy_code, field=field)
 
 
 # ── OTB Budget ────────────────────────────────────────────────────────────────

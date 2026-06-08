@@ -296,14 +296,25 @@ def db_log_audit(hierarchy_code: int, channel: str, current_week: int,
         conn.commit()
 
 
-def db_get_audit_log(limit: int = 100) -> List[Dict]:
-    """Return most-recent audit entries (newest first)."""
+def db_get_audit_log(limit: int = 100, hierarchy_code: int = None,
+                     field: str = None) -> List[Dict]:
+    """Return most-recent audit entries (newest first), with optional filters."""
+    clauses = []
+    params  = []
+    if hierarchy_code is not None:
+        clauses.append("hierarchy_code = ?")
+        params.append(hierarchy_code)
+    if field:
+        clauses.append("field = ?")
+        params.append(field)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, timestamp, hierarchy_code, channel, current_week, "
-            "field, old_value, new_value "
-            "FROM audit_log ORDER BY id DESC LIMIT ?",
-            (limit,),
+            f"SELECT id, timestamp, hierarchy_code, channel, current_week, "
+            f"field, old_value, new_value "
+            f"FROM audit_log {where} ORDER BY id DESC LIMIT ?",
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
