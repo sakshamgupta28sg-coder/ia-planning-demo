@@ -502,6 +502,7 @@ export default function WPPage() {
     setEditError("");
     try {
       const updated = await editWPRow({ hierarchy_code: hc, current_week: week, channel, field, value, mode });
+      // Optimistic update for edited week — instant feedback
       setRows((prev) =>
         prev.map((r) =>
           r.current_week === week && r.hierarchy_code === hc && r.channel === channel
@@ -509,6 +510,8 @@ export default function WPPage() {
             : r
         )
       );
+      // Full reload to propagate BOP chain to all downstream weeks
+      reloadRows();
       reloadPortfolioAndSummary();
       showToast("Saved ✓");
     } catch (e: unknown) {
@@ -678,6 +681,7 @@ export default function WPPage() {
     setEditError("");
     try {
       const updated = await undoRowOverride(hc, week, channel);
+      // Optimistic update for undone week
       setRows((prev) =>
         prev.map((r) =>
           r.current_week === week && r.hierarchy_code === hc && r.channel === channel
@@ -685,6 +689,8 @@ export default function WPPage() {
             : r
         )
       );
+      // Full reload to propagate BOP chain downstream
+      reloadRows();
       reloadPortfolioAndSummary();
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "Undo failed");
