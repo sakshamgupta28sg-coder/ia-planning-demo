@@ -48,6 +48,16 @@ def _week_offset(wk: int, delta: int):
     j = idx + delta
     return FISCAL_WEEKS[j] if 0 <= j < len(FISCAL_WEEKS) else None
 
+
+def _is_oo_locked(hc: int, wk: int) -> bool:
+    """OO Placed locked when an order placed in `wk` would arrive after season end.
+
+    Dynamic off the *effective* lead time (recomputed when LT changes), so it is
+    never stale like a seeded flag would be.
+    """
+    lt = get_effective_metrics(hc)["lead_time_weeks"]
+    return _week_offset(wk, lt) is None
+
 # Base metrics per hierarchy (AIR = avg initial retail price, AUC = avg unit cost)
 # OTB fields:
 #   target_wos     – target weeks-of-supply to hold at EOP
@@ -622,10 +632,10 @@ def _recalibrate_pass1b(hc: int, channels: List[str] = None):
             r = row_lkp.get((hc, ch, wk))
             if not r or r.get("actualised") or r.get("is_ongoing"):
                 continue
-            if r.get("oo_locked"):
-                continue   # order placed here can't be received this season
-            arr_wk    = _week_offset(wk, lt)
-            target_oo = float(arrivals.get(arr_wk, 0)) if arr_wk else 0.0
+            arr_wk = _week_offset(wk, lt)
+            if arr_wk is None:
+                continue   # locked: order placed here can't be received this season
+            target_oo = float(arrivals.get(arr_wk, 0))
             key = _ovr_key(hc, wk, ch)
             entry = dict(overrides.get(key, {}))
             entry["on_order_placed_total_unit"] = target_oo
@@ -649,9 +659,13 @@ def update_sku_setting(hc: int, field: str, value) -> Dict:
     db_upsert_sku_setting(hc, current)
     _SKU_SETTINGS_OVERRIDES[hc] = current
     recompute_recomm_for_sku(hc)
-    # target_wos change → re-calibrate Pass 1b receipts for all channels so
-    # planning receipts reflect the new target without a server restart.
-    if field == "target_wos":
+    # Any setting that changes the receipt plan → re-calibrate Pass 1b receipts for
+    # all channels so OOP/Rcpt/locks reflect the new value without a restart:
+    #   target_wos     → target_EOP changes
+    #   lead_time_weeks→ order↔arrival shift AND which tail weeks are locked
+    #   case_pack      → receipt rounding
+    #   safety_weeks   → look-ahead window
+    if field in ("target_wos", "lead_time_weeks", "case_pack", "safety_weeks"):
         _recalibrate_pass1b(hc)
     return get_effective_metrics(hc)
 
@@ -1011,6 +1025,12 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
 
         for i, b in enumerate(stream):
             b["lead_time_weeks"] = lead_time_s   # expose on every row for frontend coloring
+            # Dynamic lock: order placed here would arrive (W+LT) past season end.
+            # Recomputed off effective LT every read → never stale after an LT change.
+            b["oo_locked"] = (
+                not b.get("actualised") and not b.get("is_ongoing")
+                and _week_offset(b["current_week"], lead_time_s) is None
+            )
 
             if b.get("actualised"):
                 actual_window.append(b.get("actual_sales_units", 0))
@@ -1113,16 +1133,11 @@ def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = 
 
     # Reject OO Placed edits on locked tail weeks — an order placed here would
     # arrive after season end (W+LT off-grid) so it can never be received.
-    if field == "on_order_placed_total_unit":
-        _base = next(
-            (r for r in WP_DATA
-             if r["hierarchy_code"] == hc and r["channel"] == ch and r["current_week"] == wk),
-            None,
+    # Dynamic off effective LT, so it tracks runtime lead-time changes.
+    if field == "on_order_placed_total_unit" and _is_oo_locked(hc, wk):
+        raise ValueError(
+            f"OO Placed locked for week {wk}: arrival (W+lead_time) lands after season end."
         )
-        if _base and _base.get("oo_locked"):
-            raise ValueError(
-                f"OO Placed locked for week {wk}: arrival (W+lead_time) lands after season end."
-            )
 
     overrides = db_get_overrides()
     entry = overrides.get(key, {})

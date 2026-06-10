@@ -325,8 +325,8 @@ def edit_row(body: EditRequest):
         raise HTTPException(404, "Row not found")
     if raw.get("actualised"):
         raise HTTPException(403, f"Week {body.current_week} is actualized and cannot be edited")
-    if body.field == "on_order_placed_total_unit" and raw.get("oo_locked"):
-        raise HTTPException(403, f"Week {body.current_week} OO Placed is locked — order would arrive after season end")
+    # OO Placed tail-week lock is enforced dynamically inside apply_edit (raises
+    # ValueError → 403 below) so it tracks runtime lead-time changes.
     try:
         result = apply_edit(body.hierarchy_code, body.current_week, body.channel, body.field, body.value, body.mode)
     except ValueError as e:
