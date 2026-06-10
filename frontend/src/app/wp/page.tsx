@@ -4,7 +4,7 @@ import {
   fetchWPByWeek, fetchWPSummary, fetchWPFilters, fetchPortfolio,
   editWPRow, resetOverrides, fetchSnapshots, saveSnapshotAPI, restoreSnapshotAPI, deleteSnapshotAPI,
   topDownDistribute, previewTopDown, fetchSKUSettings, updateSKUSetting,
-  fetchTargetWOS, updateTargetWOS,
+  fetchTargetWOS, updateTargetWOS, resetTargetWOS,
   undoRowOverride, acceptRecomm, bulkShiftReceipts,
   compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget, updateBudget,
   fetchSeasonProgress, renameSnapshotAPI,
@@ -387,6 +387,8 @@ export default function WPPage() {
   const [chartCombo, setChartCombo] = useState<string>("");
   // target WOS keyed by "{hc}_{channel}"
   const [targetWOS, setTargetWOS] = useState<Record<string, number>>({});
+  // tracks which hc_channel combos have an active channel-level override
+  const [targetWOSOverridden, setTargetWOSOverridden] = useState<Record<string, boolean>>({});
   // Toast
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -463,8 +465,9 @@ export default function WPPage() {
   }, []);
 
   const reloadTargetWOS = useCallback(async () => {
-    const list: { hierarchy_code: number; channel: string; target_wos: number }[] = await fetchTargetWOS();
+    const list: { hierarchy_code: number; channel: string; target_wos: number; is_overridden: boolean }[] = await fetchTargetWOS();
     setTargetWOS(Object.fromEntries(list.map((s) => [`${s.hierarchy_code}_${s.channel}`, s.target_wos])));
+    setTargetWOSOverridden(Object.fromEntries(list.map((s) => [`${s.hierarchy_code}_${s.channel}`, s.is_overridden])));
   }, []);
 
   useEffect(() => {
@@ -528,6 +531,17 @@ export default function WPPage() {
       await Promise.all([reloadTargetWOS(), reloadRows()]);
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "Target WOS update failed");
+    }
+  }
+
+  async function handleResetTargetWOS(hc: number, channel: string) {
+    setEditError("");
+    try {
+      await resetTargetWOS(hc, channel);
+      await Promise.all([reloadTargetWOS(), reloadRows()]);
+      showToast(`Target WOS reset to SKU default`);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Target WOS reset failed");
     }
   }
 
@@ -1605,7 +1619,7 @@ export default function WPPage() {
             {selectedHcs.length === 1 && selectedChannels.length === 1 ? (
               <>
                 <EditableNumber
-                  value={targetWOS[`${selectedHcs[0]}_${selectedChannels[0]}`] ?? 6}
+                  value={targetWOS[`${selectedHcs[0]}_${selectedChannels[0]}`] ?? skuSettings[Number(selectedHcs[0])]?.target_wos ?? 0}
                   onCommit={(v) => handleTargetWOSEdit(Number(selectedHcs[0]), selectedChannels[0], v)}
                 />
                 <span className="text-[10px] text-slate-500">
@@ -1619,13 +1633,20 @@ export default function WPPage() {
                     const key = `${hc}_${ch}`;
                     const skuInfo = filters.hierarchies.find((h) => String(h.hierarchy_code) === hc);
                     return (
-                      <span key={key} className="flex items-center gap-1.5 bg-slate-700 rounded px-2 py-0.5 text-xs text-slate-300">
+                      <span key={key} className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-xs text-slate-300 ${targetWOSOverridden[key] ? "bg-amber-900/40 border border-amber-700/40" : "bg-slate-700"}`}>
                         <span className="text-slate-500">{skuInfo?.sku_code} × {ch}</span>
                         <EditableNumber
-                          value={targetWOS[key] ?? 6}
+                          value={targetWOS[key] ?? skuSettings[Number(hc)]?.target_wos ?? 0}
                           onCommit={(v) => handleTargetWOSEdit(Number(hc), ch, v)}
                         />
                         <span className="text-slate-600 text-[10px]">wks</span>
+                        {targetWOSOverridden[key] && (
+                          <button
+                            onClick={() => handleResetTargetWOS(Number(hc), ch)}
+                            title="Reset to SKU default"
+                            className="text-slate-500 hover:text-red-400 text-[10px] leading-none"
+                          >✕</button>
+                        )}
                       </span>
                     );
                   })

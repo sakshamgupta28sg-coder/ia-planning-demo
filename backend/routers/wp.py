@@ -6,7 +6,7 @@ from dummy_data import (
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
     rename_snapshot, get_all_snapshots, apply_top_down, preview_top_down,
     get_effective_metrics, update_sku_setting, EDITABLE_SKU_FIELDS,
-    get_target_wos, update_channel_target_wos, _CHANNEL_TARGET_WOS,
+    get_target_wos, update_channel_target_wos, reset_channel_target_wos, _CHANNEL_TARGET_WOS,
     clear_single_override, accept_recomm_receipts, shift_receipts,
     compare_snapshots, get_exceptions_panel,
     get_budget, set_budget, get_audit_log, get_season_progress,
@@ -260,7 +260,9 @@ def put_sku_setting(hierarchy_code: int, body: SKUSettingRequest):
 # ── Target WOS per SKU×Channel ───────────────────────────────────────────────
 @router.get("/target-wos")
 def get_all_target_wos():
-    """Return target_wos for every SKU×channel combination."""
+    """Return target_wos for every SKU×channel combination.
+    is_overridden=True means a channel-level override exists (show ✕ reset button).
+    """
     result = []
     for h in HIERARCHIES:
         hc = h["hierarchy_code"]
@@ -269,6 +271,7 @@ def get_all_target_wos():
                 "hierarchy_code": hc,
                 "channel": ch,
                 "target_wos": get_target_wos(hc, ch),
+                "is_overridden": f"{hc}_{ch}" in _CHANNEL_TARGET_WOS,
             })
     return result
 
@@ -282,6 +285,15 @@ def put_target_wos(hierarchy_code: int, channel: str, body: TargetWOSRequest):
     if channel not in CHANNELS:
         raise HTTPException(400, f"Unknown channel '{channel}'. Valid: {CHANNELS}")
     effective = update_channel_target_wos(hierarchy_code, channel, body.value)
+    return {"hierarchy_code": hierarchy_code, "channel": channel, "target_wos": effective}
+
+
+@router.delete("/target-wos/{hierarchy_code}/{channel}")
+def delete_target_wos(hierarchy_code: int, channel: str):
+    """Remove channel-level target WOS override — falls back to SKU-level default."""
+    if channel not in CHANNELS:
+        raise HTTPException(400, f"Unknown channel '{channel}'. Valid: {CHANNELS}")
+    effective = reset_channel_target_wos(hierarchy_code, channel)
     return {"hierarchy_code": hierarchy_code, "channel": channel, "target_wos": effective}
 
 

@@ -138,6 +138,12 @@ export async function updateTargetWOS(hierarchy_code: number, channel: string, v
   return res.json();
 }
 
+export async function resetTargetWOS(hierarchy_code: number, channel: string) {
+  const res = await fetch(`${BASE}/wp/target-wos/${hierarchy_code}/${channel}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function topDownDistribute(body: {
   hierarchy_codes: number[];
   channels: string[];

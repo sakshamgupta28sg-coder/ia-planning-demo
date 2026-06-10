@@ -95,6 +95,14 @@ def db_upsert_channel_setting(key: str, data: Dict):
         conn.commit()
 
 
+def db_delete_channel_setting(key: str) -> bool:
+    """Delete a channel-level setting override. Returns True if row deleted."""
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM channel_settings WHERE key = ?", (key,))
+        conn.commit()
+    return cur.rowcount > 0
+
+
 # ── SKU Settings CRUD ──────────────────────────────────────────────────────────
 
 def db_get_all_sku_settings() -> Dict[int, Dict]:

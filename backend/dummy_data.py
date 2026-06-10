@@ -620,6 +620,47 @@ def _load_sku_settings():
 _load_sku_settings()
 
 
+def reset_channel_target_wos(hc: int, channel: str) -> int:
+    """Remove channel-level target WOS override → falls back to SKU-level default.
+
+    Clears all on_order_placed_total_unit overrides for this SKU×channel so rows
+    return to clean (unmodified) state — no amber highlight left by recalibration.
+    Returns the effective target_wos after reset.
+    """
+    global _CHANNEL_TARGET_WOS
+    from database import db_delete_channel_setting
+    ch_key = f"{hc}_{channel}"
+    _CHANNEL_TARGET_WOS.pop(ch_key, None)
+    db_delete_channel_setting(ch_key)
+
+    # Clear OO Placed overrides for all planning weeks of this SKU×channel.
+    # These were written by the previous _recalibrate_pass1b call; removing them
+    # returns rows to the WP_DATA baseline (original Pass 1b values = SKU default).
+    overrides = db_get_overrides()
+    planning_wks = [w for w in FISCAL_WEEKS if w > CURRENT_WEEK]
+    updates = {}
+    for wk in planning_wks:
+        ovr_key = _ovr_key(hc, wk, channel)
+        if ovr_key in overrides:
+            entry = dict(overrides[ovr_key])
+            # Only remove the OO field — preserve any sales edits the planner made
+            if entry.get("_last_edited") == "on_order_placed_total_unit":
+                # Entire override was a receipt calibration — delete it
+                from database import db_delete_override
+                db_delete_override(ovr_key)
+            elif "on_order_placed_total_unit" in entry:
+                # Mixed override (sales + OO) — strip only the OO field
+                entry.pop("on_order_placed_total_unit", None)
+                updates[ovr_key] = entry
+
+    if updates:
+        db_batch_upsert_overrides(updates)
+
+    _rebuild_pipeline_and_recomm([hc], [channel])
+    recompute_recomm_for_sku(hc)
+    return get_target_wos(hc, channel)
+
+
 def update_channel_target_wos(hc: int, channel: str, value: int) -> int:
     """Persist target WOS for one SKU×channel, re-calibrate Pass 1b receipts, recompute recomm."""
     global _CHANNEL_TARGET_WOS
