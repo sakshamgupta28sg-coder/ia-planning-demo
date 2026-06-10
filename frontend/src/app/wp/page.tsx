@@ -1254,7 +1254,7 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right text-slate-400">{ex.channel}</td>
                       <td className="px-3 py-1.5 text-right font-mono text-slate-400">Wk {String(ex.current_week).slice(-2)}</td>
                       <td className={`px-3 py-1.5 text-right font-semibold ${ex.exception_status === "critical" ? "text-red-400" : ex.exception_status === "low" ? "text-amber-400" : "text-orange-400"}`}
-                        title="Min projected EOP in lead-time window ÷ 8wk avg">
+                        title="Forward Coverage = (stock + ordered pipeline) ÷ 8wk avg. Stockout column flags real timing gaps from the inventory chain.">
                         {ex.coverage_wks} wks
                       </td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{ex.lead_time_weeks} wks</td>
@@ -1853,7 +1853,7 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
                       <td
                         className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}
-                        title={r.fwd_coverage_wks != null ? `Fwd Coverage: ${r.fwd_coverage_wks.toFixed(1)} wks (worst EOP in LT window)${r.first_stockout_week ? ` · Stockout: Wk ${String(r.first_stockout_week).slice(-2)}` : ""}` : undefined}
+                        title={r.fwd_coverage_wks != null ? `Fwd Coverage: ${r.fwd_coverage_wks.toFixed(1)} wks (stock + ordered pipeline)${r.first_stockout_week ? ` · ⚠ Stockout risk: Wk ${String(r.first_stockout_week).slice(-2)}` : ""}` : undefined}
                       >{r.wos ?? "—"}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
                     </>}

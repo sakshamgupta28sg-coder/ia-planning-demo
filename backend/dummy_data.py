@@ -32,6 +32,7 @@ WAREHOUSE_SUB_CHANNELS = {
 
 # Fiscal weeks 202601..202652
 FISCAL_WEEKS = [int(f"2026{str(w).zfill(2)}") for w in range(1, 53)]
+_SEASON_END_WK = FISCAL_WEEKS[-1]   # last week — planned runout to 0 here is intentional
 
 # Base metrics per hierarchy (AIR = avg initial retail price, AUC = avg unit cost)
 # OTB fields:
@@ -970,11 +971,22 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 continue
 
             # Propagate BOP
+            units_s = b["written_sales_units"]
             if prev_eop is not None:
                 b["bop_units"] = prev_eop
-                units_s = b["written_sales_units"]
                 b["eop_units"] = max(0, b["bop_units"] - units_s + b["total_receipt_units"])
             prev_eop = b["eop_units"]
+
+            # Real stockout = couldn't fully serve demand this week (unmet demand).
+            #   available = BOP + receipts(=OO placed landing this week)
+            #   if available < demand → genuine stockout, EOP clamps to 0
+            # Terminal season week excluded: planned runout to zero is intentional.
+            _avail = b["bop_units"] + b["total_receipt_units"]
+            b["_stockout"] = (
+                units_s > 0
+                and _avail < units_s
+                and b["current_week"] < _SEASON_END_WK
+            )
 
             wos_s     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
             wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
@@ -992,26 +1004,45 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 b["fwd_coverage_wks"]   = None
                 b["first_stockout_week"] = None
 
-        # ── Second pass: FC (min-EOP based) + first_stockout_week ────────────
-        # Runs after full BOP chain is established so stream[i+1:].eop_units are real.
-        # Old approach: FC = (EOP + flat pipeline sum) / 8wk_avg
-        #   Problem: treats back-loaded receipts as immediately available → false green
-        # New approach: FC = min(EOP in LT window) / 8wk_avg
-        #   Reflects the worst stock position before any receipt lands
+        # ── Second pass: FC (display) + stockout signals (classification) ────
+        # Runs after full BOP chain so future eop_units / _stockout flags are real.
+        #
+        # Two SEPARATE concerns, deliberately not merged into one number:
+        #
+        #   FC (display)  = (EOP + pipeline) / 8wk_avg
+        #     Standard coverage metric. Always >= WOS (pipeline only adds stock).
+        #     Answers: "total weeks of supply I have, counting stock already ordered."
+        #
+        #   Stockout flags (classification) = walk the real EOP chain
+        #     FC sums pipeline flat, so it can't see WHEN stock lands. The chain can.
+        #     A back-loaded receipt (lands wk+14) leaves you dry wks 1-13 even though
+        #     FC looks healthy. So exceptions classify off the chain, not off FC.
         for i, b in enumerate(stream):
             if b.get("actualised") or b.get("is_ongoing"):
                 continue
             wos_s     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
             wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
-            # Include current week (i) as floor — if EOP[i] < EOP[i+1] (receipt bumps stock),
-            # the true worst point is this week, not next. Window: [i .. i+LT] inclusive.
-            lt_window = stream[i : i + 1 + lead_time_s]
-            min_eop   = min((px.get("eop_units", 0) for px in lt_window), default=b["eop_units"])
-            b["fwd_coverage_wks"] = round(min_eop / wos_avg_s, 2) if wos_avg_s > 0 else 99.0
-            # First future planning week where projected EOP hits zero
+
+            # FC: shelf stock + everything ordered to land within the LT window.
+            pipeline = sum(
+                px.get("total_receipt_units", 0)
+                for px in stream[i + 1 : i + 1 + lead_time_s]
+            )
+            b["fwd_coverage_wks"] = round(
+                (b["eop_units"] + pipeline) / wos_avg_s, 2
+            ) if wos_avg_s > 0 else 99.0
+
+            # Stockout WITHIN lead time = can't be fixed by reordering now (order
+            # placed today lands in LT weeks, too late). Window [i .. i+LT] inclusive.
+            b["_stockout_in_lt"] = any(
+                px.get("_stockout")
+                for px in stream[i : i + 1 + lead_time_s]
+                if not px.get("actualised")
+            )
+            # Earliest future week with genuine unmet demand (real stockout signal).
             b["first_stockout_week"] = next(
-                (px["current_week"] for px in stream[i + 1:]
-                 if not px.get("actualised") and px.get("eop_units", 0) <= 0),
+                (px["current_week"] for px in stream[i:]
+                 if not px.get("actualised") and px.get("_stockout")),
                 None
             )
 
@@ -1547,7 +1578,6 @@ def get_exceptions_panel() -> List[Dict]:
     """
     all_rows = get_agg_rows()
     severity_order = {"critical": 0, "low": 1, "excess": 2}
-    last_planning_wk = max(w for w in FISCAL_WEEKS if w > CURRENT_WEEK)
 
     # Classify each planning week
     raw: List[Dict] = []
@@ -1560,20 +1590,20 @@ def get_exceptions_panel() -> List[Dict]:
         cov = r.get("fwd_coverage_wks") if r.get("fwd_coverage_wks") is not None else r.get("wos")
         if cov is None:
             continue
-        # Skip end-of-season noise:
-        # 1. Natural sellout — stockout only at final week is intentional, not a problem.
-        # 2. No-demand weeks — FC=99.0 sentinel means 8wk_avg=0 (no fwd sales), not real excess.
-        first_so = r.get("first_stockout_week")
-        if first_so is not None and first_so >= last_planning_wk:
-            continue
-        if cov >= 99.0:   # sentinel: no forward demand, skip excess false-positive
-            continue
+
         order_gap = max(0, r.get("recomm_receipt_units", 0) - r.get("on_order_placed_total_unit", 0))
-        if cov < lt * 0.5:
-            status = "critical"            # genuine stockout risk regardless of OO
-        elif cov < lt and order_gap > 0:
-            status = "low"                 # below LT AND there's an actionable order gap
-        elif cov > lt * 3:
+        first_so  = r.get("first_stockout_week")
+
+        # Classification uses the EOP chain (real stockout timing), NOT FC.
+        # FC is display only — it sums pipeline flat and can mask arrival-timing gaps.
+        if r.get("_stockout_in_lt"):
+            # Will run dry within lead time → reordering now can't save it.
+            status = "critical"
+        elif first_so is not None and order_gap > 0:
+            # Stockout later in the horizon AND there's room to order more.
+            status = "low"
+        elif cov < 99.0 and cov > lt * 3:
+            # Excess: too much coverage. Skip FC=99 sentinel (no forward demand).
             status = "excess"
         else:
             continue
