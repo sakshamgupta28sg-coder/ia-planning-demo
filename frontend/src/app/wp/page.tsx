@@ -1206,17 +1206,25 @@ export default function WPPage() {
           >
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-slate-200">⚠ Inventory Exceptions</span>
-              <span className="text-[10px] bg-red-900/50 text-red-300 px-1.5 py-0.5 rounded">
-                {exceptions.filter((e) => e.exception_status === "critical").length} critical
-              </span>
-              <span className="text-[10px] bg-amber-900/40 text-amber-300 px-1.5 py-0.5 rounded">
-                {exceptions.filter((e) => e.exception_status === "low").length} low
-              </span>
-              {exceptions.filter((e) => e.exception_status === "excess").length > 0 && (
-                <span className="text-[10px] bg-orange-900/30 text-orange-300 px-1.5 py-0.5 rounded">
-                  {exceptions.filter((e) => e.exception_status === "excess").length} excess
-                </span>
-              )}
+              {(() => {
+                const filtered = exceptions.filter((e) =>
+                  (selectedHcs.length === 0 || selectedHcs.includes(String(e.hierarchy_code))) &&
+                  (selectedChannels.length === 0 || selectedChannels.includes(e.channel))
+                );
+                return <>
+                  <span className="text-[10px] bg-red-900/50 text-red-300 px-1.5 py-0.5 rounded">
+                    {filtered.filter((e) => e.exception_status === "critical").length} critical
+                  </span>
+                  <span className="text-[10px] bg-amber-900/40 text-amber-300 px-1.5 py-0.5 rounded">
+                    {filtered.filter((e) => e.exception_status === "low").length} low
+                  </span>
+                  {filtered.filter((e) => e.exception_status === "excess").length > 0 && (
+                    <span className="text-[10px] bg-orange-900/30 text-orange-300 px-1.5 py-0.5 rounded">
+                      {filtered.filter((e) => e.exception_status === "excess").length} excess
+                    </span>
+                  )}
+                </>;
+              })()}
             </div>
             <span className="text-slate-500 text-xs">{showExceptions ? "▴ collapse" : "▾ expand"}</span>
           </button>
@@ -1232,7 +1240,10 @@ export default function WPPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {exceptions.map((ex) => (
+                  {exceptions.filter((ex) =>
+                    (selectedHcs.length === 0 || selectedHcs.includes(String(ex.hierarchy_code))) &&
+                    (selectedChannels.length === 0 || selectedChannels.includes(ex.channel))
+                  ).map((ex) => (
                     <tr key={`${ex.hierarchy_code}_${ex.channel}`} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                       <td className="px-3 py-1.5 text-right">
                         {ex.exception_status === "critical" && <span className="text-red-400 font-semibold">⚠ Stockout</span>}
