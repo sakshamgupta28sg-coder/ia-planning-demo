@@ -1027,9 +1027,11 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
             wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
 
             if b.get("is_ongoing"):
+                # Ongoing/in-flight week: show current WOS off trailing 4-week actual
+                # sales rate. FC not shown (no forward pipeline meaning mid-week).
                 trail_avg = sum(actual_window) / len(actual_window) if actual_window else 0
                 b["wos"]                = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else None
-                b["fwd_coverage_wks"]   = None   # no pipeline meaning for current week
+                b["fwd_coverage_wks"]   = None
                 b["first_stockout_week"] = None
             else:
                 # WOS = EOP / 8-week forward avg (current stock only)

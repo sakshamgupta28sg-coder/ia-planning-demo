@@ -430,7 +430,9 @@ export default function WPPage() {
   const isLocked = (r: WPRow) => r.actualised || r.is_ongoing;
   // Rows visible in the weekly table — respects planning-only toggle + week range filter
   const displayRows = rows.filter((r) => {
-    if (planningOnly && isLocked(r)) return false;
+    // Planning-weeks mode hides PAST actualised weeks but keeps the ongoing/in-flight
+    // week visible (read-only) — it's the current position the plan launches from.
+    if (planningOnly && r.actualised) return false;
     if (weekFrom !== null && r.current_week < weekFrom) return false;
     if (weekTo   !== null && r.current_week > weekTo)   return false;
     return true;
@@ -1504,7 +1506,7 @@ export default function WPPage() {
           {canEdit && (
             <button
               onClick={() => setPlanningOnly((v) => !v)}
-              title="Hide actualised & in-flight weeks, show only editable planning weeks"
+              title="Hide past actualised weeks. Keeps the in-flight current week (read-only) + planning weeks."
               className={`text-xs px-3 py-1 rounded border transition-colors ${
                 planningOnly
                   ? "bg-blue-800 border-blue-600 text-blue-200"
