@@ -1545,6 +1545,7 @@ def get_exceptions_panel() -> List[Dict]:
     """
     all_rows = get_agg_rows()
     severity_order = {"critical": 0, "low": 1, "excess": 2}
+    last_planning_wk = max(w for w in FISCAL_WEEKS if w > CURRENT_WEEK)
 
     # Classify each planning week
     raw: List[Dict] = []
@@ -1556,6 +1557,14 @@ def get_exceptions_panel() -> List[Dict]:
         lt = m["lead_time_weeks"]
         cov = r.get("fwd_coverage_wks") if r.get("fwd_coverage_wks") is not None else r.get("wos")
         if cov is None:
+            continue
+        # Skip end-of-season noise:
+        # 1. Natural sellout — stockout only at final week is intentional, not a problem.
+        # 2. No-demand weeks — FC=99.0 sentinel means 8wk_avg=0 (no fwd sales), not real excess.
+        first_so = r.get("first_stockout_week")
+        if first_so is not None and first_so >= last_planning_wk:
+            continue
+        if cov >= 99.0:   # sentinel: no forward demand, skip excess false-positive
             continue
         order_gap = max(0, r.get("recomm_receipt_units", 0) - r.get("on_order_placed_total_unit", 0))
         if cov < lt * 0.5:
