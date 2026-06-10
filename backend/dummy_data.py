@@ -560,6 +560,7 @@ def _recalibrate_pass1b(hc: int, channels: List[str] = None):
     _channels = channels if channels is not None else CHANNELS
     m  = get_effective_metrics(hc)
     cp = m["case_pack"]
+    lt = m["lead_time_weeks"]
 
     overrides = db_get_overrides()
     # index WP_DATA rows for fast lookup
@@ -577,22 +578,21 @@ def _recalibrate_pass1b(hc: int, channels: List[str] = None):
         ongoing = row_lkp.get((hc, ch, CURRENT_WEEK))
         prev_eop = ongoing["eop_units"] if ongoing else 0
 
+        # ── Pass A: compute the ARRIVAL schedule that hits target WOS each week ──
+        # arrivals[wk] = stock that must LAND in `wk` to bring EOP to target_eop.
+        arrivals: Dict[int, int] = {}
         for wk in FISCAL_WEEKS:
             r = row_lkp.get((hc, ch, wk))
             if not r:
                 continue
-            if r.get("actualised"):
-                prev_eop = r["eop_units"]
-                continue
-            if r.get("is_ongoing"):
+            if r.get("actualised") or r.get("is_ongoing"):
                 prev_eop = r["eop_units"]
                 continue
 
-            # ── Planning week: derive effective sales (honour existing overrides) ──
+            # Effective sales (honour existing sales overrides) for the BOP→EOP chain
             key = _ovr_key(hc, wk, ch)
             ovr = overrides.get(key, {})
             trigger = ovr.get("_last_edited")
-
             if trigger == "written_sales_units" and "written_sales_units" in ovr:
                 sales = int(ovr["written_sales_units"])
             elif trigger == "written_sales_dollars" and "written_sales_dollars" in ovr:
@@ -603,26 +603,32 @@ def _recalibrate_pass1b(hc: int, channels: List[str] = None):
             else:
                 sales = r["written_sales_units"]
 
-            bop         = prev_eop
-            eop_no_rcpt = max(0, bop - sales)
-
+            eop_no_rcpt = max(0, prev_eop - sales)
             wos_dem   = _WOS_DEMAND_INDEX.get((hc, ch, wk), 0)
             fwd_avg8  = wos_dem / WOS_WINDOW if WOS_WINDOW > 0 else 0
             target_eop = round(target_wos_val * fwd_avg8)
-
             if target_eop <= eop_no_rcpt:
                 receipt = 0
             else:
                 raw     = target_eop - eop_no_rcpt
                 receipt = int(_math.ceil(raw / cp) * cp) if cp > 0 else int(raw)
+            arrivals[wk] = receipt
+            prev_eop = eop_no_rcpt + receipt
 
-            eop      = eop_no_rcpt + receipt
-            prev_eop = eop
-
-            # Persist as override — _recalc maps _last_edited=on_order_placed_total_unit
-            # → total_receipt_units = on_order_placed_total_unit, then recalculates EOP.
-            entry = dict(ovr)
-            entry["on_order_placed_total_unit"] = float(receipt)
+        # ── Pass B: derive ORDERS — OOP[W] = arrivals[W+LT] (the order that lands it) ──
+        # Locked tail weeks (W+LT off-grid) get no order. Rcpt[W] = OOP[W-LT] is then
+        # re-derived by the get_agg_rows chain, so EOP hits the target as intended.
+        for wk in FISCAL_WEEKS:
+            r = row_lkp.get((hc, ch, wk))
+            if not r or r.get("actualised") or r.get("is_ongoing"):
+                continue
+            if r.get("oo_locked"):
+                continue   # order placed here can't be received this season
+            arr_wk    = _week_offset(wk, lt)
+            target_oo = float(arrivals.get(arr_wk, 0)) if arr_wk else 0.0
+            key = _ovr_key(hc, wk, ch)
+            entry = dict(overrides.get(key, {}))
+            entry["on_order_placed_total_unit"] = target_oo
             entry["_last_edited"] = "on_order_placed_total_unit"
             updates[key] = entry
 
@@ -1479,6 +1485,8 @@ def accept_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
             for r in get_agg_rows(hc, ch):
                 if r.get("actualised") or r.get("is_ongoing"):
                     continue
+                if r.get("oo_locked"):
+                    continue   # order placed here can't be received this season
                 recomm = int(r.get("recomm_receipt_units", 0))
                 key = _ovr_key(hc, r["current_week"], ch)
                 entry = dict(overrides.get(key, {}))
