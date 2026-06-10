@@ -531,7 +531,7 @@ export default function WPPage() {
     setEditError("");
     try {
       await updateTargetWOS(hc, channel, Math.round(value));
-      await Promise.all([reloadTargetWOS(), reloadRows()]);
+      await Promise.all([reloadTargetWOS(), reloadRows(), reloadPortfolioAndSummary()]);
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "Target WOS update failed");
     }
@@ -541,7 +541,7 @@ export default function WPPage() {
     setEditError("");
     try {
       await resetTargetWOS(hc, channel);
-      await Promise.all([reloadTargetWOS(), reloadRows()]);
+      await Promise.all([reloadTargetWOS(), reloadRows(), reloadPortfolioAndSummary()]);
       showToast(`Target WOS reset to SKU default`);
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "Target WOS reset failed");
@@ -552,7 +552,7 @@ export default function WPPage() {
     setEditError("");
     try {
       await updateSKUSetting(hc, field, value);
-      await Promise.all([reloadSkuSettings(), reloadRows()]);
+      await Promise.all([reloadSkuSettings(), reloadRows(), reloadPortfolioAndSummary()]);
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "SKU setting update failed");
     }
@@ -562,7 +562,7 @@ export default function WPPage() {
     setEditError("");
     try {
       await Promise.all(hcs.map((hc) => resetSKUSettings(hc)));
-      await Promise.all([reloadSkuSettings(), reloadTargetWOS(), reloadRows()]);
+      await Promise.all([reloadSkuSettings(), reloadTargetWOS(), reloadRows(), reloadPortfolioAndSummary()]);
       showToast(`Settings reset to default${hcs.length > 1 ? ` (${hcs.length} SKUs)` : ""}`);
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : "Reset failed", "error");
