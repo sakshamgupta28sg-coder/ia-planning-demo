@@ -325,7 +325,12 @@ def edit_row(body: EditRequest):
         raise HTTPException(404, "Row not found")
     if raw.get("actualised"):
         raise HTTPException(403, f"Week {body.current_week} is actualized and cannot be edited")
-    result = apply_edit(body.hierarchy_code, body.current_week, body.channel, body.field, body.value, body.mode)
+    if body.field == "on_order_placed_total_unit" and raw.get("oo_locked"):
+        raise HTTPException(403, f"Week {body.current_week} OO Placed is locked — order would arrive after season end")
+    try:
+        result = apply_edit(body.hierarchy_code, body.current_week, body.channel, body.field, body.value, body.mode)
+    except ValueError as e:
+        raise HTTPException(403, str(e))
     if not result:
         raise HTTPException(404, "Row not found")
     return result

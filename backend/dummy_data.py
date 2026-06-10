@@ -33,6 +33,20 @@ WAREHOUSE_SUB_CHANNELS = {
 # Fiscal weeks 202601..202652
 FISCAL_WEEKS = [int(f"2026{str(w).zfill(2)}") for w in range(1, 53)]
 _SEASON_END_WK = FISCAL_WEEKS[-1]   # last week — planned runout to 0 here is intentional
+_WK_POS = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
+
+
+def _week_offset(wk: int, delta: int):
+    """Return the fiscal week `delta` positions from `wk`, or None if off-grid.
+
+    delta = +LT  → arrival week of an order placed in `wk`
+    delta = -LT  → order week that produces an arrival in `wk`
+    """
+    idx = _WK_POS.get(wk)
+    if idx is None:
+        return None
+    j = idx + delta
+    return FISCAL_WEEKS[j] if 0 <= j < len(FISCAL_WEEKS) else None
 
 # Base metrics per hierarchy (AIR = avg initial retail price, AUC = avg unit cost)
 # OTB fields:
@@ -237,6 +251,7 @@ def generate_wp_data() -> List[Dict]:
                     "eop_cost":               round(eop * m["auc"], 2),
                     "on_order_placed_total_unit": receipt_units,
                     "total_receipt_units":    receipt_units,
+                    "oo_locked":              False,  # set in remap pass (tail weeks)
                     "recomm_receipt_units":   0,   # filled in Pass 3
                     "lead_time_weeks":        m["lead_time_weeks"],
                     "fwd_coverage_wks":       None,  # filled in get_agg_rows
@@ -304,16 +319,42 @@ def generate_wp_data() -> List[Dict]:
                 r["eop_cost"]  = round(eop * m["auc"], 2)
                 prev_eop = eop
 
-    # ── Build pipeline index (after Pass 1b so OO Placed values are final) ──────
-    # pipeline[hc, ch, wk] = sum of on_order_placed_total_unit for the next
-    # lead_time weeks — used by recomm to avoid double-ordering in-flight stock.
+    # ── OOP ≠ Rcpt: order placed week W arrives week W+LT (Rcpt[W] = OOP[W−LT]) ──
+    # Pass 1b set total_receipt_units = arrivals A[W] that hit target WOS.
+    # Derive the ORDER that produces each arrival: OOP[W] = A[W+LT].
+    # Orders whose arrival lands past season end can't be received → locked.
+    for h in HIERARCHIES:
+        hc = h["hierarchy_code"]
+        lt = HIERARCHY_METRICS[hc]["lead_time_weeks"]
+        for ch in CHANNELS:
+            for wk in FISCAL_WEEKS:
+                r = row_lkp.get((hc, ch, wk))
+                if not r:
+                    continue
+                is_plan = not r.get("actualised") and not r.get("is_ongoing")
+                arr_wk  = _week_offset(wk, lt)            # week this order would arrive
+                arr_row = row_lkp.get((hc, ch, arr_wk)) if arr_wk else None
+                if arr_row is not None and not arr_row.get("actualised") and not arr_row.get("is_ongoing"):
+                    # Arrival lands on a planning week → this week's order = that arrival.
+                    r["on_order_placed_total_unit"] = arr_row["total_receipt_units"]
+                    if is_plan:
+                        r["oo_locked"] = False
+                elif is_plan:
+                    # Arrival would land on past week or beyond season end → can't order.
+                    r["on_order_placed_total_unit"] = 0
+                    r["oo_locked"] = (arr_wk is None)   # locked only if off-grid (tail weeks)
+                # else: deeper actualised/ongoing weeks keep historical OOP untouched
+
+    # ── Build pipeline index (in-transit = arrivals landing in the next LT weeks) ──
+    # pipeline[hc, ch, wk] = sum of receipts ARRIVING over the next lead_time weeks
+    # — used by recomm to avoid double-ordering stock already in transit.
     _PIPELINE_INDEX.clear()
     for (hc, ch, wk) in demand_index:
         m   = HIERARCHY_METRICS[hc]
         lt  = m["lead_time_weeks"]
         idx = wk_pos[wk]
         _PIPELINE_INDEX[(hc, ch, wk)] = sum(
-            row_lkp.get((hc, ch, fw), {}).get("on_order_placed_total_unit", 0)
+            row_lkp.get((hc, ch, fw), {}).get("total_receipt_units", 0)
             for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
         )
 
@@ -748,9 +789,12 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
             row["written_sales_units"]      = units
             row["written_discount_dollars"] = round(units * air * dr, 2)
 
-    # ── OO placed: update total receipts ───────────────────────────────────────
+    # ── OO placed: order this week, arrives LT weeks later ──────────────────────
+    # Does NOT change this week's receipts/EOP — Rcpt[W] = OOP[W−LT], so editing
+    # OOP[W] moves the arrival at W+LT. The chain in get_agg_rows re-derives all
+    # receipts/EOP from shifted OOP; here we leave same-week receipts untouched.
     elif trigger == "on_order_placed_total_unit":
-        row["total_receipt_units"] = row["on_order_placed_total_unit"]
+        pass
 
     # Sync units from row (may have been back-calculated above)
     units = row["written_sales_units"]
@@ -843,6 +887,7 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 "total_receipt_units":       0,
                 "recomm_receipt_units":      0,
                 "on_order_placed_total_unit":   0,
+                "oo_locked":                 False,
                 "actualised":  r["actualised"],
                 "is_ongoing":  r.get("is_ongoing", False),
                 "actual_sales_units":   0,
@@ -864,6 +909,7 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
         b["total_receipt_units"]         += r["total_receipt_units"]
         b["recomm_receipt_units"]        += r["recomm_receipt_units"]
         b["on_order_placed_total_unit"]  += r["on_order_placed_total_unit"]
+        b["oo_locked"]                    = b["oo_locked"] or r.get("oo_locked", False)
         b["actual_sales_units"]          += r["actual_sales_units"]
         b["actual_sales_dollars"]         = round(b["actual_sales_dollars"] + r["actual_sales_dollars"], 2)
         b["actual_sales_cost"]            = round(b["actual_sales_cost"]    + r["actual_sales_cost"], 2)
@@ -970,15 +1016,22 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 prev_eop = b["eop_units"]
                 continue
 
-            # Propagate BOP
+            # Derive receipts: Rcpt[W] = OOP placed LT weeks earlier (now arriving).
+            # Orders are the editable lever; receipts are what those orders land as.
+            # Ongoing week keeps its historical (ingested) receipts.
             units_s = b["written_sales_units"]
+            if not b.get("is_ongoing"):
+                src = stream[i - lead_time_s] if i - lead_time_s >= 0 else None
+                b["total_receipt_units"] = int(src.get("on_order_placed_total_unit", 0)) if src is not None else 0
+
+            # Propagate BOP
             if prev_eop is not None:
                 b["bop_units"] = prev_eop
-                b["eop_units"] = max(0, b["bop_units"] - units_s + b["total_receipt_units"])
+            b["eop_units"] = max(0, b["bop_units"] - units_s + b["total_receipt_units"])
             prev_eop = b["eop_units"]
 
             # Real stockout = couldn't fully serve demand this week (unmet demand).
-            #   available = BOP + receipts(=OO placed landing this week)
+            #   available = BOP + receipts(stock actually arriving this week)
             #   if available < demand → genuine stockout, EOP clamps to 0
             # Terminal season week excluded: planned runout to zero is intentional.
             _avail = b["bop_units"] + b["total_receipt_units"]
@@ -1051,6 +1104,20 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
 
 def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = None) -> Dict:
     key = _ovr_key(hc, wk, ch)
+
+    # Reject OO Placed edits on locked tail weeks — an order placed here would
+    # arrive after season end (W+LT off-grid) so it can never be received.
+    if field == "on_order_placed_total_unit":
+        _base = next(
+            (r for r in WP_DATA
+             if r["hierarchy_code"] == hc and r["channel"] == ch and r["current_week"] == wk),
+            None,
+        )
+        if _base and _base.get("oo_locked"):
+            raise ValueError(
+                f"OO Placed locked for week {wk}: arrival (W+lead_time) lands after season end."
+            )
+
     overrides = db_get_overrides()
     entry = overrides.get(key, {})
 
@@ -1245,10 +1312,12 @@ def _rebuild_pipeline_and_recomm(hcs: List[int], channels: List[str] = None):
                 for r in WP_DATA
                 if r["hierarchy_code"] == hc and r["channel"] == ch
             }
+            # pipeline = receipts ARRIVING in the next LT weeks = orders placed
+            # LT weeks before each of those weeks: Rcpt[fw] = OOP[fw−LT].
             for wk in FISCAL_WEEKS:
                 idx = wk_pos[wk]
                 _PIPELINE_INDEX[(hc, ch, wk)] = sum(
-                    oo_map.get(fw, 0)
+                    oo_map.get(_week_offset(fw, -lt), 0)
                     for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
                 )
         for r in WP_DATA:
@@ -1298,9 +1367,9 @@ def _reset_fwd_demand_and_recomm():
                     demand_map.get((hc, ch, fw), 0)
                     for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
                 )
-                # Rebuild pipeline from baseline WP_DATA OO Placed (overrides cleared)
+                # Pipeline = receipts arriving next LT weeks (Rcpt[fw] = OOP[fw−LT]).
                 _PIPELINE_INDEX[(hc, ch, wk)] = sum(
-                    oo_base_map.get((hc, ch, fw), 0)
+                    oo_base_map.get((hc, ch, _week_offset(fw, -lt)), 0)
                     for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
                 )
 

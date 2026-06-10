@@ -22,7 +22,7 @@ type WPRow = {
   written_dr_perc: number; written_discount_dollars: number;
   bop_units: number; eop_units: number;
   total_receipt_units: number; recomm_receipt_units: number;
-  on_order_placed_total_unit: number;
+  on_order_placed_total_unit: number; oo_locked: boolean;
   // Actuals & variance
   actual_sales_units: number; actual_sales_dollars: number; actual_sales_cost: number;
   variance_units: number | null; variance_dollars: number | null; variance_units_perc: number | null;
@@ -1844,12 +1844,12 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right text-slate-400">{r.written_auc.toFixed(2)}</td>
                       <td className={`px-3 py-1.5 text-right ${r.written_gm_dollar >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtD(r.written_gm_dollar)}</td>
                       <td className={`px-3 py-1.5 text-right ${r.written_gm_perc >= 0.5 ? "text-emerald-400" : r.written_gm_perc >= 0.3 ? "text-slate-300" : "text-amber-400"}`}>{pct(r.written_gm_perc)}</td>
-                      <td className="px-3 py-1.5 text-right">
-                        <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified} locked={locked}
+                      <td className="px-3 py-1.5 text-right" title={r.oo_locked ? "Locked: order placed here arrives after season end (week + lead time is off-grid)" : "Order placed this week — arrives lead-time weeks later"}>
+                        <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified} locked={locked || r.oo_locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "on_order_placed_total_unit", v)} />
                       </td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.bop_units)}</td>
-                      <td className="px-3 py-1.5 text-right text-slate-400" title="Total receipts inbound this week">{fmtU(r.total_receipt_units)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-400" title="Stock arriving this week (from orders placed lead-time weeks ago). Read-only — driven by OO Placed.">{fmtU(r.total_receipt_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
                       <td
                         className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}
@@ -1892,11 +1892,11 @@ export default function WPPage() {
                           title="Forward Coverage = (EOP + OO pipeline next lead-time weeks) / 8wk avg">
                         {r.fwd_coverage_wks != null ? r.fwd_coverage_wks.toFixed(1) : "—"}
                       </td>
-                      <td className="px-3 py-1.5 text-right">
-                        <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified} locked={locked}
+                      <td className="px-3 py-1.5 text-right" title={r.oo_locked ? "Locked: order placed here arrives after season end (week + lead time is off-grid)" : "Order placed this week — arrives lead-time weeks later"}>
+                        <EditableNumber value={r.on_order_placed_total_unit} isModified={r._modified} locked={locked || r.oo_locked}
                           onCommit={(v) => handleEdit(r.hierarchy_code, r.channel, r.current_week, "on_order_placed_total_unit", v)} />
                       </td>
-                      <td className="px-3 py-1.5 text-right">{fmtU(r.total_receipt_units)}</td>
+                      <td className="px-3 py-1.5 text-right" title="Stock arriving this week (from orders placed lead-time weeks ago). Read-only.">{fmtU(r.total_receipt_units)}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
                       <td className={`px-3 py-1.5 text-right font-medium ${
                         Math.max(0, r.recomm_receipt_units - r.on_order_placed_total_unit) > 0
