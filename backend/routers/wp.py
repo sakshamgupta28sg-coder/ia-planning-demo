@@ -5,7 +5,7 @@ from dummy_data import (
     WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, CURRENT_WEEK, CATEGORIES,
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
     rename_snapshot, get_all_snapshots, apply_top_down, preview_top_down,
-    get_effective_metrics, update_sku_setting, EDITABLE_SKU_FIELDS,
+    get_effective_metrics, update_sku_setting, reset_sku_settings, EDITABLE_SKU_FIELDS,
     get_target_wos, update_channel_target_wos, reset_channel_target_wos, _CHANNEL_TARGET_WOS,
     clear_single_override, accept_recomm_receipts, shift_receipts,
     compare_snapshots, get_exceptions_panel,
@@ -252,6 +252,16 @@ def put_sku_setting(hierarchy_code: int, body: SKUSettingRequest):
         raise HTTPException(400, f"'{body.field}' not editable. Allowed: {EDITABLE_SKU_FIELDS}")
     try:
         effective = update_sku_setting(hierarchy_code, body.field, body.value)
+    except KeyError:
+        raise HTTPException(404, f"hierarchy_code {hierarchy_code} not found")
+    return {"hierarchy_code": hierarchy_code, **effective}
+
+
+@router.delete("/sku-settings/{hierarchy_code}")
+def reset_sku_setting(hierarchy_code: int):
+    """Reset all SKU settings (+ channel target WOS + recalibration receipts) to defaults."""
+    try:
+        effective = reset_sku_settings(hierarchy_code)
     except KeyError:
         raise HTTPException(404, f"hierarchy_code {hierarchy_code} not found")
     return {"hierarchy_code": hierarchy_code, **effective}

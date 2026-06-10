@@ -122,6 +122,14 @@ def db_upsert_sku_setting(hierarchy_code: int, data: Dict):
         conn.commit()
 
 
+def db_delete_sku_setting(hierarchy_code: int) -> bool:
+    """Delete setting overrides for one SKU → falls back to base metrics."""
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM sku_settings WHERE hierarchy_code = ?", (hierarchy_code,))
+        conn.commit()
+    return cur.rowcount > 0
+
+
 # ── Override CRUD ─────────────────────────────────────────────────────────────
 
 def db_get_overrides() -> Dict[str, Dict]:

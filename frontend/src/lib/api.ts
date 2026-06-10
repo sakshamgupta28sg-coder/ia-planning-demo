@@ -123,6 +123,12 @@ export async function updateSKUSetting(hierarchy_code: number, field: string, va
   return res.json();
 }
 
+export async function resetSKUSettings(hierarchy_code: number) {
+  const res = await fetch(`${BASE}/wp/sku-settings/${hierarchy_code}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function fetchTargetWOS() {
   const res = await fetch(`${BASE}/wp/target-wos`, { cache: "no-store" });
   return res.json();

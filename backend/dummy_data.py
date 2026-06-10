@@ -682,6 +682,52 @@ def _load_sku_settings():
 _load_sku_settings()
 
 
+def reset_sku_settings(hc: int) -> Dict:
+    """Reset all SKU settings (lead_time, case_pack, safety_weeks, target_wos) to
+    base HIERARCHY_METRICS defaults. Also clears channel-level target WOS overrides
+    and recalibration leftover OO Placed overrides so the row plan returns clean.
+
+    Sales edits are preserved (only the OO field is stripped from mixed overrides).
+    Returns effective metrics after reset.
+    """
+    global _SKU_SETTINGS_OVERRIDES, _CHANNEL_TARGET_WOS
+    from database import db_delete_sku_setting, db_delete_channel_setting, db_delete_override
+
+    # 1. SKU-level setting overrides → base metrics
+    _SKU_SETTINGS_OVERRIDES.pop(hc, None)
+    db_delete_sku_setting(hc)
+
+    # 2. Channel-level target WOS overrides for every channel of this SKU
+    for ch in CHANNELS:
+        ck = f"{hc}_{ch}"
+        if ck in _CHANNEL_TARGET_WOS:
+            _CHANNEL_TARGET_WOS.pop(ck, None)
+            db_delete_channel_setting(ck)
+
+    # 3. Strip recalibration-written OO Placed overrides (preserve sales edits)
+    overrides = db_get_overrides()
+    planning_wks = [w for w in FISCAL_WEEKS if w > CURRENT_WEEK]
+    updates: Dict[str, Dict] = {}
+    for ch in CHANNELS:
+        for wk in planning_wks:
+            k = _ovr_key(hc, wk, ch)
+            if k not in overrides:
+                continue
+            entry = dict(overrides[k])
+            if entry.get("_last_edited") == "on_order_placed_total_unit":
+                db_delete_override(k)
+            elif "on_order_placed_total_unit" in entry:
+                entry.pop("on_order_placed_total_unit", None)
+                updates[k] = entry
+    if updates:
+        db_batch_upsert_overrides(updates)
+
+    # 4. Rebuild pipeline + recomm for this SKU (back to base-metric baseline)
+    _rebuild_pipeline_and_recomm([hc])
+    recompute_recomm_for_sku(hc)
+    return get_effective_metrics(hc)
+
+
 def reset_channel_target_wos(hc: int, channel: str) -> int:
     """Remove channel-level target WOS override → falls back to SKU-level default.
 

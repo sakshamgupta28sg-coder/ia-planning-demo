@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import {
   fetchWPByWeek, fetchWPSummary, fetchWPFilters, fetchPortfolio,
   editWPRow, resetOverrides, fetchSnapshots, saveSnapshotAPI, restoreSnapshotAPI, deleteSnapshotAPI,
-  topDownDistribute, previewTopDown, fetchSKUSettings, updateSKUSetting,
+  topDownDistribute, previewTopDown, fetchSKUSettings, updateSKUSetting, resetSKUSettings,
   fetchTargetWOS, updateTargetWOS, resetTargetWOS,
   undoRowOverride, acceptRecomm, bulkShiftReceipts,
   compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget, updateBudget,
@@ -555,6 +555,17 @@ export default function WPPage() {
       await Promise.all([reloadSkuSettings(), reloadRows()]);
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "SKU setting update failed");
+    }
+  }
+
+  async function handleResetSKUSettings(hcs: number[]) {
+    setEditError("");
+    try {
+      await Promise.all(hcs.map((hc) => resetSKUSettings(hc)));
+      await Promise.all([reloadSkuSettings(), reloadTargetWOS(), reloadRows()]);
+      showToast(`Settings reset to default${hcs.length > 1 ? ` (${hcs.length} SKUs)` : ""}`);
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : "Reset failed", "error");
     }
   }
 
@@ -1299,10 +1310,21 @@ export default function WPPage() {
             Cross-Product Impact
             {hasEdits && <span className="ml-2 text-xs text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded">edits active</span>}
           </h2>
-          <span className="text-xs text-slate-500">
-            {selectedCategory ? `${selectedCategory} · ` : ""}
-            {selectedHcs.length > 0 ? `${selectedHcs.length} selected` : "Click rows to select · select all to plan by category"}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-500">
+              {selectedCategory ? `${selectedCategory} · ` : ""}
+              {selectedHcs.length > 0 ? `${selectedHcs.length} selected` : "Click rows to select · select all to plan by category"}
+            </span>
+            {selectedHcs.length > 0 && (
+              <button
+                onClick={() => handleResetSKUSettings(selectedHcs.map(Number))}
+                title="Reset Lead Time, Case Pack, Safety Wks, Target WOS to defaults for selected SKU(s)"
+                className="text-xs text-slate-400 hover:text-red-400 border border-slate-600 hover:border-red-700/50 rounded px-2 py-0.5 transition-colors"
+              >
+                ↺ Reset settings
+              </button>
+            )}
+          </div>
         </div>
         <table className="w-full text-xs text-slate-300">
           <thead>
