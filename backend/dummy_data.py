@@ -779,15 +779,18 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     if row.get("actualised"):
         row["wos"] = None
         row["fwd_coverage_wks"] = None
+        row.setdefault("first_stockout_week", None)
     elif row.get("is_ongoing"):
         row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
         row["fwd_coverage_wks"] = None
+        row.setdefault("first_stockout_week", None)
     else:
         _wos_fwd = _WOS_DEMAND_INDEX.get((row["hierarchy_code"], row["channel"], row["current_week"]), 0)
         _wos_avg = _wos_fwd / WOS_WINDOW if WOS_WINDOW > 0 else 0
         row["wos"] = round(row["eop_units"] / _wos_avg, 2) if _wos_avg > 0 else 99.0
-        # fwd_coverage not computable in single-row context (no pipeline access) — stream walk handles it
+        # fwd_coverage + first_stockout not computable in single-row context — stream walk handles it
         row.setdefault("fwd_coverage_wks", None)
+        row.setdefault("first_stockout_week", None)
     avail = row["bop_units"] + row["total_receipt_units"]
     row["sell_through_perc"] = round(row["actual_sales_units"] / avail, 4) if avail > 0 and row.get("actualised") else 0.0
     row["otb_units"]   = 0
@@ -960,8 +963,9 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 actual_window.append(b.get("actual_sales_units", 0))
                 if len(actual_window) > 4:
                     actual_window.pop(0)
-                b["wos"]              = None
-                b["fwd_coverage_wks"] = None
+                b["wos"]                = None
+                b["fwd_coverage_wks"]   = None
+                b["first_stockout_week"] = None
                 prev_eop = b["eop_units"]
                 continue
 
@@ -977,20 +981,37 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
 
             if b.get("is_ongoing"):
                 trail_avg = sum(actual_window) / len(actual_window) if actual_window else 0
-                b["wos"]              = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else 99.0
-                b["fwd_coverage_wks"] = None   # no pipeline meaning for current week
+                b["wos"]                = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else 99.0
+                b["fwd_coverage_wks"]   = None   # no pipeline meaning for current week
+                b["first_stockout_week"] = None
             else:
                 # WOS = EOP / 8-week forward avg (current stock only)
                 b["wos"] = round(b["eop_units"] / wos_avg_s, 2) if wos_avg_s > 0 else 99.0
-                # Forward Coverage = (EOP + OO Placed next lead_time weeks) / 8-week avg
-                # OO Placed in future stream rows IS the in-transit pipeline
-                pipeline = sum(
-                    px.get("total_receipt_units", 0)
-                    for px in stream[i + 1 : i + 1 + lead_time_s]
-                )
-                b["fwd_coverage_wks"] = round(
-                    (b["eop_units"] + pipeline) / wos_avg_s, 2
-                ) if wos_avg_s > 0 else 99.0
+                # FC + first_stockout_week computed in second pass below
+                # (needs full BOP chain propagated first so future eop_units are accurate)
+                b["fwd_coverage_wks"]   = None
+                b["first_stockout_week"] = None
+
+        # ── Second pass: FC (min-EOP based) + first_stockout_week ────────────
+        # Runs after full BOP chain is established so stream[i+1:].eop_units are real.
+        # Old approach: FC = (EOP + flat pipeline sum) / 8wk_avg
+        #   Problem: treats back-loaded receipts as immediately available → false green
+        # New approach: FC = min(EOP in LT window) / 8wk_avg
+        #   Reflects the worst stock position before any receipt lands
+        for i, b in enumerate(stream):
+            if b.get("actualised") or b.get("is_ongoing"):
+                continue
+            wos_s     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
+            wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
+            lt_window = stream[i + 1 : i + 1 + lead_time_s]
+            min_eop   = min((px.get("eop_units", 0) for px in lt_window), default=b["eop_units"])
+            b["fwd_coverage_wks"] = round(min_eop / wos_avg_s, 2) if wos_avg_s > 0 else 99.0
+            # First future planning week where projected EOP hits zero
+            b["first_stockout_week"] = next(
+                (px["current_week"] for px in stream[i + 1:]
+                 if not px.get("actualised") and px.get("eop_units", 0) <= 0),
+                None
+            )
 
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
@@ -1546,15 +1567,16 @@ def get_exceptions_panel() -> List[Dict]:
         else:
             continue
         raw.append({
-            "hierarchy_code":   hc,
-            "l2_name":          r.get("l2_name", ""),
-            "channel":          r["channel"],
-            "current_week":     r["current_week"],
-            "exception_status": status,
-            "coverage_wks":     round(cov, 1),
-            "lead_time_weeks":  lt,
-            "eop_units":        r["eop_units"],
-            "wos":              r.get("wos"),
+            "hierarchy_code":    hc,
+            "l2_name":           r.get("l2_name", ""),
+            "channel":           r["channel"],
+            "current_week":      r["current_week"],
+            "exception_status":  status,
+            "coverage_wks":      round(cov, 1),
+            "lead_time_weeks":   lt,
+            "eop_units":         r["eop_units"],
+            "wos":               r.get("wos"),
+            "first_stockout_week": r.get("first_stockout_week"),
         })
 
     # Group by SKU×channel: surface worst week, count total affected

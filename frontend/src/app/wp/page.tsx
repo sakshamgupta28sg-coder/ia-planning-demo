@@ -29,6 +29,7 @@ type WPRow = {
   // Inventory analytics
   sell_through_perc: number; wos: number | null;
   fwd_coverage_wks: number | null; lead_time_weeks: number;
+  first_stockout_week: number | null;
   otb_units: number; otb_dollars: number;
   // LY
   ly_sales_units: number; ly_sales_dollars: number;
@@ -59,7 +60,7 @@ type ExceptionRow = {
   hierarchy_code: number; l2_name: string; channel: string; current_week: number;
   exception_status: "critical" | "low" | "excess"; coverage_wks: number;
   lead_time_weeks: number; eop_units: number; wos: number | null;
-  affected_weeks: number;
+  affected_weeks: number; first_stockout_week: number | null;
 };
 type AuditEntry = {
   id: number; timestamp: string; hierarchy_code: number; channel: string;
@@ -1224,7 +1225,7 @@ export default function WPPage() {
               <table className="w-full text-xs text-slate-300">
                 <thead>
                   <tr className="border-b border-slate-700 text-slate-400 bg-slate-800/80">
-                    {["Status", "Product", "Channel", "Worst Week", "Coverage", "Lead Time", "Wks At Risk"].map((h) => (
+                    {["Status", "Product", "Channel", "Worst Week", "Coverage", "Lead Time", "Stockout Wk", "Wks At Risk"].map((h) => (
                       <th key={h} className={`px-3 py-2 font-medium ${h === "Product" ? "text-left" : "text-right"}`}>{h}</th>
                     ))}
                     <th className="px-3 py-2 font-medium text-right">Action</th>
@@ -1241,10 +1242,16 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-left text-white">{ex.l2_name}</td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{ex.channel}</td>
                       <td className="px-3 py-1.5 text-right font-mono text-slate-400">Wk {String(ex.current_week).slice(-2)}</td>
-                      <td className={`px-3 py-1.5 text-right font-semibold ${ex.exception_status === "critical" ? "text-red-400" : ex.exception_status === "low" ? "text-amber-400" : "text-orange-400"}`}>
+                      <td className={`px-3 py-1.5 text-right font-semibold ${ex.exception_status === "critical" ? "text-red-400" : ex.exception_status === "low" ? "text-amber-400" : "text-orange-400"}`}
+                        title="Min projected EOP in lead-time window ÷ 8wk avg">
                         {ex.coverage_wks} wks
                       </td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{ex.lead_time_weeks} wks</td>
+                      <td className="px-3 py-1.5 text-right">
+                        {ex.first_stockout_week
+                          ? <span className="text-red-400 font-mono text-xs">Wk {String(ex.first_stockout_week).slice(-2)}</span>
+                          : <span className="text-slate-600">—</span>}
+                      </td>
                       <td className="px-3 py-1.5 text-right">
                         <span className={`font-medium ${ex.affected_weeks > 4 ? "text-red-400" : ex.affected_weeks > 1 ? "text-amber-400" : "text-slate-400"}`}>
                           {ex.affected_weeks}
@@ -1835,7 +1842,7 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
                       <td
                         className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}
-                        title={r.fwd_coverage_wks != null ? `Fwd Coverage: ${r.fwd_coverage_wks.toFixed(1)} wks (incl. OO pipeline)` : undefined}
+                        title={r.fwd_coverage_wks != null ? `Fwd Coverage: ${r.fwd_coverage_wks.toFixed(1)} wks (worst EOP in LT window)${r.first_stockout_week ? ` · Stockout: Wk ${String(r.first_stockout_week).slice(-2)}` : ""}` : undefined}
                       >{r.wos ?? "—"}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
                     </>}
