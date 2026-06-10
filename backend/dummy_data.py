@@ -1003,7 +1003,9 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 continue
             wos_s     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
             wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
-            lt_window = stream[i + 1 : i + 1 + lead_time_s]
+            # Include current week (i) as floor — if EOP[i] < EOP[i+1] (receipt bumps stock),
+            # the true worst point is this week, not next. Window: [i .. i+LT] inclusive.
+            lt_window = stream[i : i + 1 + lead_time_s]
             min_eop   = min((px.get("eop_units", 0) for px in lt_window), default=b["eop_units"])
             b["fwd_coverage_wks"] = round(min_eop / wos_avg_s, 2) if wos_avg_s > 0 else 99.0
             # First future planning week where projected EOP hits zero
