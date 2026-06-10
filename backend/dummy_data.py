@@ -797,13 +797,13 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
         row["fwd_coverage_wks"] = None
         row.setdefault("first_stockout_week", None)
     elif row.get("is_ongoing"):
-        row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else 99.0
+        row["wos"] = round(row["eop_units"] / units, 2) if units > 0 else None
         row["fwd_coverage_wks"] = None
         row.setdefault("first_stockout_week", None)
     else:
         _wos_fwd = _WOS_DEMAND_INDEX.get((row["hierarchy_code"], row["channel"], row["current_week"]), 0)
         _wos_avg = _wos_fwd / WOS_WINDOW if WOS_WINDOW > 0 else 0
-        row["wos"] = round(row["eop_units"] / _wos_avg, 2) if _wos_avg > 0 else 99.0
+        row["wos"] = round(row["eop_units"] / _wos_avg, 2) if _wos_avg > 0 else None
         # fwd_coverage + first_stockout not computable in single-row context — stream walk handles it
         row.setdefault("fwd_coverage_wks", None)
         row.setdefault("first_stockout_week", None)
@@ -918,7 +918,7 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
             b["written_dr_perc"] = round(max(0.0, 1 - b["written_aur"] / b["written_air"]), 4)
 
         # WOS (Weeks of Supply)
-        b["wos"] = round(b["eop_units"] / b["written_sales_units"], 2) if b["written_sales_units"] > 0 else 99.0
+        b["wos"] = round(b["eop_units"] / b["written_sales_units"], 2) if b["written_sales_units"] > 0 else None
 
         # Sell-Through % (only meaningful for actualised weeks)
         avail = b["bop_units"] + b["total_receipt_units"]
@@ -1028,12 +1028,12 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
 
             if b.get("is_ongoing"):
                 trail_avg = sum(actual_window) / len(actual_window) if actual_window else 0
-                b["wos"]                = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else 99.0
+                b["wos"]                = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else None
                 b["fwd_coverage_wks"]   = None   # no pipeline meaning for current week
                 b["first_stockout_week"] = None
             else:
                 # WOS = EOP / 8-week forward avg (current stock only)
-                b["wos"] = round(b["eop_units"] / wos_avg_s, 2) if wos_avg_s > 0 else 99.0
+                b["wos"] = round(b["eop_units"] / wos_avg_s, 2) if wos_avg_s > 0 else None
                 # FC + first_stockout_week computed in second pass below
                 # (needs full BOP chain propagated first so future eop_units are accurate)
                 b["fwd_coverage_wks"]   = None
@@ -1069,7 +1069,7 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
             )
             b["fwd_coverage_wks"] = round(
                 (b["eop_units"] + pipeline) / wos_avg_s, 2
-            ) if wos_avg_s > 0 else 99.0
+            ) if wos_avg_s > 0 else None
 
             # Stockout WITHIN lead time = can't be fixed by reordering now (order
             # placed today lands in LT weeks, too late). Window [i .. i+LT] inclusive.
@@ -1664,7 +1664,7 @@ def get_exceptions_panel() -> List[Dict]:
         elif first_so is not None and order_gap > 0:
             # Stockout later in the horizon AND there's room to order more.
             status = "low"
-        elif cov < 99.0 and cov > lt * 3:
+        elif cov > lt * 3:
             # Excess: too much coverage. Skip FC=99 sentinel (no forward demand).
             status = "excess"
         else:
