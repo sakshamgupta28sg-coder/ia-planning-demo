@@ -197,12 +197,15 @@ function EditableNumber({
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  // All hooks must run unconditionally — `locked` toggles at runtime (e.g. LT edit
+  // changes oo_locked), so an early return before useEffect breaks the hook order.
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
 
   const display = isInteger ? fmtU(value) : value.toFixed(2);
 
   if (locked) {
     return (
-      <span className="text-slate-600 select-none" title="Locked — actualised or ongoing week">
+      <span className="text-slate-600 select-none" title="Locked — week not editable">
         {display}
         <span className="ml-0.5 text-[9px]">🔒</span>
       </span>
@@ -219,8 +222,6 @@ function EditableNumber({
     const num = parseFloat(inputVal);
     if (!isNaN(num) && num !== value) onCommit(num);
   }
-
-  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
 
   if (editing) {
     return (
@@ -255,10 +256,12 @@ function EditablePercent({
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  // All hooks unconditionally before any early return (keeps hook order stable).
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
 
   if (locked) {
     return (
-      <span className="text-slate-600 select-none" title="Locked — actualised or ongoing week">
+      <span className="text-slate-600 select-none" title="Locked — week not editable">
         {pct(value)}<span className="ml-0.5 text-[9px]">🔒</span>
       </span>
     );
@@ -270,7 +273,6 @@ function EditablePercent({
     const num = parseFloat(inputVal);
     if (!isNaN(num) && num >= 0 && num <= 100 && num / 100 !== value) onCommit(num / 100, mode);
   }
-  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
 
   if (editing) {
     return (
