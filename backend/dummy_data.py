@@ -1671,19 +1671,22 @@ def get_exceptions_panel() -> List[Dict]:
         if r.get("_stockout"):
             actual_stockout_wks.setdefault(key, []).append(r["current_week"])
 
-        # Track actual excess weeks
-        if cov > get_target_wos(hc, ch) * 1.5:
+        # Track actual excess weeks (only unlocked — locked tail weeks can't be actioned)
+        is_locked = r.get("oo_locked", False)
+        if cov > get_target_wos(hc, ch) * 1.5 and not is_locked:
             actual_excess_wks.setdefault(key, []).append(r["current_week"])
 
         order_gap = max(0, r.get("recomm_receipt_units", 0) - r.get("on_order_placed_total_unit", 0))
         first_so  = r.get("first_stockout_week")
 
         # Classification uses the EOP chain (real stockout timing), NOT FC.
+        # Excess in oo_locked tail weeks is not actionable (can't reduce ingested supply
+        # or place fewer orders) — skip to avoid end-of-season demand-taper false positives.
         if r.get("_stockout_in_lt"):
             status = "critical"
         elif first_so is not None and order_gap > 0:
             status = "low"
-        elif cov > get_target_wos(hc, ch) * 1.5:
+        elif cov > get_target_wos(hc, ch) * 1.5 and not is_locked:
             status = "excess"
         else:
             continue
