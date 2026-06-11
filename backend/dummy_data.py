@@ -975,9 +975,11 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
         m_s = get_effective_metrics(hc_s)
         lead_time_s   = m_s["lead_time_weeks"]
         look_ahead_s  = lead_time_s + m_s["safety_weeks"]
+        target_wos_s  = get_target_wos(hc_s, ch_s)
 
         for i, b in enumerate(stream):
             b["lead_time_weeks"] = lead_time_s   # expose on every row for frontend coloring
+            b["target_wos"]      = target_wos_s  # for target-aware excess coloring
             # Dynamic lock: order placed here would arrive (W+LT) past season end.
             # Recomputed off effective LT every read → never stale after an LT change.
             b["oo_locked"] = (
@@ -1666,8 +1668,10 @@ def get_exceptions_panel() -> List[Dict]:
         elif first_so is not None and order_gap > 0:
             # Stockout later in the horizon AND there's room to order more.
             status = "low"
-        elif cov > lt * 3:
-            # Excess: too much coverage. Skip FC=99 sentinel (no forward demand).
+        elif cov > get_target_wos(hc, r["channel"]) * 1.5:
+            # Excess = holding 50%+ over your OWN target buffer (target_wos).
+            # Target-aware, not lead-time-based: a short LT with a high target_wos
+            # shouldn't auto-flag (you asked to hold that much).
             status = "excess"
         else:
             continue
