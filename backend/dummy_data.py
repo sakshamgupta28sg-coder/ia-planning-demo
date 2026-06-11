@@ -1091,12 +1091,15 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
             wos_s     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
             wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
 
-            # pipeline = planner orders in transit = OOP placed in the last LT weeks
+            # pipeline = PLANNER orders in transit = OOP placed in the last LT weeks
             # (weeks i-LT+1 .. i), which arrive over the next LT weeks. Not received yet.
+            # Exclude actualized/ongoing rows — their OOP is display-only (historical
+            # orders already captured in ingested supply). Only planning OOP counts.
             lo = max(0, i - lead_time_s + 1)
             pipeline = sum(
                 px.get("on_order_placed_total_unit", 0)
                 for px in stream[lo : i + 1]
+                if not px.get("actualised") and not px.get("is_ongoing")
             )
             b["fwd_coverage_wks"] = round(
                 (b["eop_units"] + pipeline) / wos_avg_s, 2
