@@ -1688,35 +1688,37 @@ def get_exceptions_panel() -> List[Dict]:
             "first_stockout_week": r.get("first_stockout_week"),
         })
 
-    # Group by SKU×channel: surface worst week, collect all affected week numbers
+    # Group by SKU×channel: surface worst week, collect weeks per severity
     by_combo: Dict[tuple, Dict] = {}
     for row in raw:
         key = (row["hierarchy_code"], row["channel"])
+        status = row["exception_status"]
         if key not in by_combo:
-            by_combo[key] = {**row, "affected_week_list": [row["current_week"]]}
+            by_combo[key] = {**row, "affected_by_status": {status: [row["current_week"]]}}
         else:
             existing = by_combo[key]
-            existing["affected_week_list"].append(row["current_week"])
+            existing["affected_by_status"].setdefault(status, []).append(row["current_week"])
             # Pick the representative "worst" week:
             #   - higher severity always wins
             #   - same severity: stockout (critical/low) → LOWEST coverage (closest to dry)
             #                    excess               → HIGHEST coverage (most overstocked)
-            same_sev = row["exception_status"] == existing["exception_status"]
+            same_sev = status == existing["exception_status"]
             if same_sev:
-                if row["exception_status"] == "excess":
+                if status == "excess":
                     worse = row["coverage_wks"] > existing["coverage_wks"]
                 else:
                     worse = row["coverage_wks"] < existing["coverage_wks"]
             else:
-                worse = severity_order[row["exception_status"]] < severity_order[existing["exception_status"]]
+                worse = severity_order[status] < severity_order[existing["exception_status"]]
             if worse:
-                week_list = existing["affected_week_list"]
-                by_combo[key] = {**row, "affected_week_list": week_list}
+                by_status = existing["affected_by_status"]
+                by_combo[key] = {**row, "affected_by_status": by_status}
 
-    # Sort each week list and add count for convenience
+    # Sort each per-status list and derive total count
     for v in by_combo.values():
-        v["affected_week_list"] = sorted(v["affected_week_list"])
-        v["affected_weeks"] = len(v["affected_week_list"])
+        for s in v["affected_by_status"]:
+            v["affected_by_status"][s] = sorted(v["affected_by_status"][s])
+        v["affected_weeks"] = sum(len(wks) for wks in v["affected_by_status"].values())
 
     result = list(by_combo.values())
     return sorted(result, key=lambda x: (severity_order[x["exception_status"]], x["coverage_wks"]))

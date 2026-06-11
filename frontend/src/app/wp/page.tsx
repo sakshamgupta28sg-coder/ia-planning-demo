@@ -60,7 +60,7 @@ type ExceptionRow = {
   hierarchy_code: number; l2_name: string; channel: string; current_week: number;
   exception_status: "critical" | "low" | "excess"; coverage_wks: number;
   lead_time_weeks: number; eop_units: number; wos: number | null;
-  affected_weeks: number; affected_week_list: number[]; first_stockout_week: number | null;
+  affected_weeks: number; affected_by_status: Record<string, number[]>; first_stockout_week: number | null;
 };
 
 function weekRanges(weeks: number[]): string {
@@ -1300,11 +1300,18 @@ export default function WPPage() {
                           : <span className="text-slate-600">—</span>}
                       </td>
                       <td className="px-3 py-1.5 text-right">
-                        <span
-                          className={`font-mono text-xs ${ex.affected_weeks > 4 ? "text-red-400" : ex.affected_weeks > 1 ? "text-amber-400" : "text-slate-400"}`}
-                          title={`${ex.affected_weeks} week${ex.affected_weeks !== 1 ? "s" : ""} affected`}
-                        >
-                          {weekRanges(ex.affected_week_list)}
+                        <span className="font-mono text-xs" title={`${ex.affected_weeks} week${ex.affected_weeks !== 1 ? "s" : ""} affected`}>
+                          {(["critical", "low", "excess"] as const)
+                            .filter(s => ex.affected_by_status?.[s]?.length)
+                            .map((s, i) => (
+                              <span key={s}>
+                                {i > 0 && <span className="text-slate-600"> · </span>}
+                                <span className={s === "critical" ? "text-red-400" : s === "low" ? "text-amber-400" : "text-orange-400"}>
+                                  {weekRanges(ex.affected_by_status[s])}
+                                </span>
+                                <span className="text-slate-500 text-[10px] ml-0.5">{s === "critical" ? "⚠" : s === "low" ? "↓" : "↑"}</span>
+                              </span>
+                            ))}
                         </span>
                       </td>
                       <td className="px-3 py-1.5 text-right">
