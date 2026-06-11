@@ -60,8 +60,27 @@ type ExceptionRow = {
   hierarchy_code: number; l2_name: string; channel: string; current_week: number;
   exception_status: "critical" | "low" | "excess"; coverage_wks: number;
   lead_time_weeks: number; eop_units: number; wos: number | null;
-  affected_weeks: number; first_stockout_week: number | null;
+  affected_weeks: number; affected_week_list: number[]; first_stockout_week: number | null;
 };
+
+function weekRanges(weeks: number[]): string {
+  if (!weeks || weeks.length === 0) return "—";
+  const sorted = [...weeks].sort((a, b) => a - b);
+  const ranges: string[] = [];
+  let start = sorted[0], end = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] - sorted[i - 1] === 1) {
+      end = sorted[i];
+    } else {
+      const s = String(start).slice(-2), e = String(end).slice(-2);
+      ranges.push(start === end ? `Wk${s}` : `Wk${s}–${e}`);
+      start = sorted[i]; end = sorted[i];
+    }
+  }
+  const s = String(start).slice(-2), e = String(end).slice(-2);
+  ranges.push(start === end ? `Wk${s}` : `Wk${s}–${e}`);
+  return ranges.join(", ");
+}
 type AuditEntry = {
   id: number; timestamp: string; hierarchy_code: number; channel: string;
   current_week: number; field: string; old_value: string | null; new_value: string;
@@ -1250,7 +1269,7 @@ export default function WPPage() {
               <table className="w-full text-xs text-slate-300">
                 <thead>
                   <tr className="border-b border-slate-700 text-slate-400 bg-slate-800/80">
-                    {["Status", "Product", "Channel", "Worst Week", "Fwd Cov", "Lead Time", "Stockout Wk", "Wks At Risk"].map((h) => (
+                    {["Status", "Product", "Channel", "Worst Week", "Fwd Cov", "Lead Time", "Stockout Wk", "Affected Weeks"].map((h) => (
                       <th key={h} className={`px-3 py-2 font-medium ${h === "Product" ? "text-left" : "text-right"}`}>{h}</th>
                     ))}
                     <th className="px-3 py-2 font-medium text-right">Action</th>
@@ -1281,8 +1300,11 @@ export default function WPPage() {
                           : <span className="text-slate-600">—</span>}
                       </td>
                       <td className="px-3 py-1.5 text-right">
-                        <span className={`font-medium ${ex.affected_weeks > 4 ? "text-red-400" : ex.affected_weeks > 1 ? "text-amber-400" : "text-slate-400"}`}>
-                          {ex.affected_weeks}
+                        <span
+                          className={`font-mono text-xs ${ex.affected_weeks > 4 ? "text-red-400" : ex.affected_weeks > 1 ? "text-amber-400" : "text-slate-400"}`}
+                          title={`${ex.affected_weeks} week${ex.affected_weeks !== 1 ? "s" : ""} affected`}
+                        >
+                          {weekRanges(ex.affected_week_list)}
                         </span>
                       </td>
                       <td className="px-3 py-1.5 text-right">
@@ -1300,7 +1322,7 @@ export default function WPPage() {
                 </tbody>
               </table>
               <div className="px-4 py-2 border-t border-slate-700 text-[10px] text-slate-600">
-                One row per SKU × channel · showing worst coverage week · Wks At Risk = total affected weeks
+                One row per SKU × channel · showing worst coverage week · Affected Weeks = contiguous ranges (hover for count)
               </div>
             </div>
           )}

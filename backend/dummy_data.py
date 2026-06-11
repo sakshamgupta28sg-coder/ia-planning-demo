@@ -1688,15 +1688,15 @@ def get_exceptions_panel() -> List[Dict]:
             "first_stockout_week": r.get("first_stockout_week"),
         })
 
-    # Group by SKU×channel: surface worst week, count total affected
+    # Group by SKU×channel: surface worst week, collect all affected week numbers
     by_combo: Dict[tuple, Dict] = {}
     for row in raw:
         key = (row["hierarchy_code"], row["channel"])
         if key not in by_combo:
-            by_combo[key] = {**row, "affected_weeks": 1}
+            by_combo[key] = {**row, "affected_week_list": [row["current_week"]]}
         else:
             existing = by_combo[key]
-            existing["affected_weeks"] += 1
+            existing["affected_week_list"].append(row["current_week"])
             # Pick the representative "worst" week:
             #   - higher severity always wins
             #   - same severity: stockout (critical/low) → LOWEST coverage (closest to dry)
@@ -1710,8 +1710,13 @@ def get_exceptions_panel() -> List[Dict]:
             else:
                 worse = severity_order[row["exception_status"]] < severity_order[existing["exception_status"]]
             if worse:
-                count = existing["affected_weeks"]
-                by_combo[key] = {**row, "affected_weeks": count}
+                week_list = existing["affected_week_list"]
+                by_combo[key] = {**row, "affected_week_list": week_list}
+
+    # Sort each week list and add count for convenience
+    for v in by_combo.values():
+        v["affected_week_list"] = sorted(v["affected_week_list"])
+        v["affected_weeks"] = len(v["affected_week_list"])
 
     result = list(by_combo.values())
     return sorted(result, key=lambda x: (severity_order[x["exception_status"]], x["coverage_wks"]))
