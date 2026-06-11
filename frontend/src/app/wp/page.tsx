@@ -1307,9 +1307,8 @@ export default function WPPage() {
                               <span key={s}>
                                 {i > 0 && <span className="text-slate-600"> · </span>}
                                 <span className={s === "critical" ? "text-red-400" : s === "low" ? "text-amber-400" : "text-orange-400"}>
-                                  {weekRanges(ex.affected_by_status[s])}
+                                  {s === "critical" ? "⚠ " : s === "low" ? "↓ " : "↑ "}{weekRanges(ex.affected_by_status[s])}
                                 </span>
-                                <span className="text-slate-500 text-[10px] ml-0.5">{s === "critical" ? "⚠" : s === "low" ? "↓" : "↑"}</span>
                               </span>
                             ))}
                         </span>
