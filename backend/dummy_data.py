@@ -332,26 +332,14 @@ def generate_wp_data() -> List[Dict]:
                 r["eop_cost"]  = round(eop * m["auc"], 2)
                 prev_eop = eop
 
-    # ── Pass 1c: backfill historical OOP for actualised + ongoing weeks ──────────
-    # In the real world orders WERE placed in past weeks; OOP[W] = the supply that
-    # arrived LT weeks later (ingested[W+LT]).  This is display-only: the Rcpt
-    # formula skips OOP from actualized source weeks to avoid double-counting
-    # (ingested already carries those arrivals).
-    for h in HIERARCHIES:
-        hc = h["hierarchy_code"]
-        lt = HIERARCHY_METRICS[hc]["lead_time_weeks"]
-        for ch in CHANNELS:
-            for wk in FISCAL_WEEKS:
-                r = row_lkp.get((hc, ch, wk))
-                if not r or (not r.get("actualised") and not r.get("is_ongoing")):
-                    continue
-                future_wk = _week_offset(wk, lt)
-                if future_wk is not None:
-                    future_row = row_lkp.get((hc, ch, future_wk))
-                    if future_row:
-                        r["on_order_placed_total_unit"] = int(
-                            future_row.get("ingested_receipt_units", 0)
-                        )
+    # ── Historical OO Placed (display) is NOT stored here ────────────────────────
+    # Actualised/ongoing weeks keep OOP = 0 in WP_DATA so the recomm-pipeline math
+    # reads clean planner-order data (no historical pollution). The display value
+    # OOP[W] = ingested[W+LT] is recomputed off EFFECTIVE LT on every read in
+    # get_agg_rows() — that way it tracks runtime lead-time changes and never goes
+    # stale against the receipt offset. (Earlier this was a base-LT Pass 1c backfill
+    # written into WP_DATA, which both went stale on LT change and leaked into the
+    # pipeline index for early planning weeks.)
 
     # ── OO Placed locks (tail weeks) ─────────────────────────────────────────────
     # OOP[W] = NEW orders the planner places; they arrive at W+LT and ADD to Rcpt
@@ -530,6 +518,10 @@ def recompute_recomm_for_sku(hc: int):
         (hc, r["channel"], r["current_week"]): r["on_order_placed_total_unit"]
         for r in WP_DATA if r["hierarchy_code"] == hc
     }
+    ing_map: Dict[tuple, int] = {
+        (hc, r["channel"], r["current_week"]): r.get("ingested_receipt_units", 0)
+        for r in WP_DATA if r["hierarchy_code"] == hc
+    }
 
     # Rewrite demand + pipeline indexes for this SKU
     lt = m["lead_time_weeks"]
@@ -544,8 +536,12 @@ def recompute_recomm_for_sku(hc: int):
                 demand_map.get((hc, ch, fw), 0)
                 for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
             )
+            # Pipeline = receipts ARRIVING next LT weeks = ingested + planner OOP
+            # landing there (Rcpt[fw] = ingested[fw] + OOP[fw−LT]). Must match the
+            # other rebuild paths so recomm is consistent on fresh load too.
             _PIPELINE_INDEX[(hc, ch, wk)] = sum(
-                oo_map.get((hc, ch, fw), 0)
+                ing_map.get((hc, ch, fw), 0)
+                + oo_map.get((hc, ch, _week_offset(fw, -lt)), 0)
                 for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
             )
 
@@ -1008,6 +1004,18 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 and _week_offset(b["current_week"], lead_time_s) is None
             )
 
+            # Historical OO Placed display for actualized/ongoing weeks = the
+            # ingested supply that arrived LT weeks LATER (the order this week
+            # produced):  OOP[W] = ingested[W+LT].  Recomputed off EFFECTIVE LT
+            # every read so it stays consistent with the receipt offset after an
+            # LT change (Pass 1c seeds it off base LT; this overrides on read).
+            # Display-only — receipt formula skips actualized/ongoing source OOP.
+            if b.get("actualised") or b.get("is_ongoing"):
+                fwd = stream[i + lead_time_s] if i + lead_time_s < len(stream) else None
+                b["on_order_placed_total_unit"] = (
+                    int(fwd.get("ingested_receipt_units", 0)) if fwd else 0
+                )
+
             if b.get("actualised"):
                 actual_window.append(b.get("actual_sales_units", 0))
                 if len(actual_window) > 4:
@@ -1273,11 +1281,16 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
 
             # Rebuild demand + pipeline indexes for all weeks of this SKU×channel
             lt = m["lead_time_weeks"]
-            # Build oo_ovr once (not inside the 52-week loop) — same content every iteration.
+            # Build oo_ovr + ing_map once (not inside the 52-week loop).
             oo_ovr = {
                 r["current_week"]: overrides.get(
                     _ovr_key(hc, r["current_week"], ch), {}
                 ).get("on_order_placed_total_unit", r["on_order_placed_total_unit"])
+                for r in WP_DATA
+                if r["hierarchy_code"] == hc and r["channel"] == ch
+            }
+            ing_map = {
+                r["current_week"]: r.get("ingested_receipt_units", 0)
                 for r in WP_DATA
                 if r["hierarchy_code"] == hc and r["channel"] == ch
             }
@@ -1291,8 +1304,12 @@ def _rebuild_fwd_demand_and_recomm(hcs: List[int], channels: List[str] = None):
                     eff_units.get(fw, 0)
                     for fw in FISCAL_WEEKS[idx + 1: idx + 1 + WOS_WINDOW]
                 )
+                # Pipeline = total receipts ARRIVING next LT weeks = ingested supply
+                # + planner OOP landing there (Rcpt[fw] = ingested[fw] + OOP[fw−LT]).
+                # Must match _rebuild_pipeline_and_recomm so recomm stays consistent
+                # whether the last edit was sales or OO Placed.
                 _PIPELINE_INDEX[(hc, ch, wk)] = sum(
-                    oo_ovr.get(fw, 0)
+                    ing_map.get(fw, 0) + oo_ovr.get(_week_offset(fw, -lt), 0)
                     for fw in FISCAL_WEEKS[idx + 1: idx + 1 + lt]
                 )
 
