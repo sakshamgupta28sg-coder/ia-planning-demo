@@ -1697,10 +1697,19 @@ def get_exceptions_panel() -> List[Dict]:
         else:
             existing = by_combo[key]
             existing["affected_weeks"] += 1
-            # Escalate to worse severity; within same severity pick lower coverage
-            if (severity_order[row["exception_status"]] < severity_order[existing["exception_status"]] or
-                    (row["exception_status"] == existing["exception_status"] and
-                     row["coverage_wks"] < existing["coverage_wks"])):
+            # Pick the representative "worst" week:
+            #   - higher severity always wins
+            #   - same severity: stockout (critical/low) → LOWEST coverage (closest to dry)
+            #                    excess               → HIGHEST coverage (most overstocked)
+            same_sev = row["exception_status"] == existing["exception_status"]
+            if same_sev:
+                if row["exception_status"] == "excess":
+                    worse = row["coverage_wks"] > existing["coverage_wks"]
+                else:
+                    worse = row["coverage_wks"] < existing["coverage_wks"]
+            else:
+                worse = severity_order[row["exception_status"]] < severity_order[existing["exception_status"]]
+            if worse:
                 count = existing["affected_weeks"]
                 by_combo[key] = {**row, "affected_weeks": count}
 
