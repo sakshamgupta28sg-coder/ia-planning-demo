@@ -332,6 +332,27 @@ def generate_wp_data() -> List[Dict]:
                 r["eop_cost"]  = round(eop * m["auc"], 2)
                 prev_eop = eop
 
+    # ── Pass 1c: backfill historical OOP for actualised + ongoing weeks ──────────
+    # In the real world orders WERE placed in past weeks; OOP[W] = the supply that
+    # arrived LT weeks later (ingested[W+LT]).  This is display-only: the Rcpt
+    # formula skips OOP from actualized source weeks to avoid double-counting
+    # (ingested already carries those arrivals).
+    for h in HIERARCHIES:
+        hc = h["hierarchy_code"]
+        lt = HIERARCHY_METRICS[hc]["lead_time_weeks"]
+        for ch in CHANNELS:
+            for wk in FISCAL_WEEKS:
+                r = row_lkp.get((hc, ch, wk))
+                if not r or (not r.get("actualised") and not r.get("is_ongoing")):
+                    continue
+                future_wk = _week_offset(wk, lt)
+                if future_wk is not None:
+                    future_row = row_lkp.get((hc, ch, future_wk))
+                    if future_row:
+                        r["on_order_placed_total_unit"] = int(
+                            future_row.get("ingested_receipt_units", 0)
+                        )
+
     # ── OO Placed locks (tail weeks) ─────────────────────────────────────────────
     # OOP[W] = NEW orders the planner places; they arrive at W+LT and ADD to Rcpt
     # (Rcpt[W] = ingested[W] + OOP[W−LT]). Baseline OOP = 0 (set above). A week is
@@ -1005,7 +1026,13 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
             if not b.get("is_ongoing"):
                 ingested = int(b.get("ingested_receipt_units", 0))
                 src = stream[i - lead_time_s] if i - lead_time_s >= 0 else None
-                oo_landing = int(src.get("on_order_placed_total_unit", 0)) if src is not None else 0
+                # Only use OOP from planning source weeks — actualized/ongoing OOP is
+                # display-only (ingested already carries those historical arrivals).
+                oo_landing = (
+                    int(src.get("on_order_placed_total_unit", 0))
+                    if src is not None and not src.get("actualised") and not src.get("is_ongoing")
+                    else 0
+                )
                 b["total_receipt_units"] = ingested + oo_landing
 
             # Propagate BOP
