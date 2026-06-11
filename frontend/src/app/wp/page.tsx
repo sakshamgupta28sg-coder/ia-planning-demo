@@ -1248,7 +1248,7 @@ export default function WPPage() {
               <table className="w-full text-xs text-slate-300">
                 <thead>
                   <tr className="border-b border-slate-700 text-slate-400 bg-slate-800/80">
-                    {["Status", "Product", "Channel", "Worst Week", "Coverage", "Lead Time", "Stockout Wk", "Wks At Risk"].map((h) => (
+                    {["Status", "Product", "Channel", "Worst Week", "Fwd Cov", "Lead Time", "Stockout Wk", "Wks At Risk"].map((h) => (
                       <th key={h} className={`px-3 py-2 font-medium ${h === "Product" ? "text-left" : "text-right"}`}>{h}</th>
                     ))}
                     <th className="px-3 py-2 font-medium text-right">Action</th>
@@ -1779,7 +1779,7 @@ export default function WPPage() {
                   { l: "List Price (AIR)" }, { l: "Disc% ✎", edit: true }, { l: "Disc $" }, { l: "AUR" },
                   { l: "AUC" }, { l: "GM $" }, { l: "GM %" },
                   { l: "OO Placed ✎", edit: true }, { l: "BOP" }, { l: "Rcpt" }, { l: "EOP" },
-                  { l: "WOS" }, { l: "Recomm Rcpt" },
+                  { l: "WOS" }, { l: "Fwd Cov" }, { l: "Recomm Rcpt" },
                 ].map((h) => (
                   <th key={h.l} className={`px-3 py-2 font-medium whitespace-nowrap ${h.left ? "text-left" : "text-right"} ${h.edit ? "text-blue-400" : ""}`}>{h.l}</th>
                 ))}
@@ -1878,9 +1878,13 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right text-slate-400" title="Stock arriving this week (from orders placed lead-time weeks ago). Read-only — driven by OO Placed.">{fmtU(r.total_receipt_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
                       <td
-                        className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12)}`}
-                        title={r.fwd_coverage_wks != null ? `Fwd Coverage: ${r.fwd_coverage_wks.toFixed(1)} wks (stock + ordered pipeline)${r.first_stockout_week ? ` · ⚠ Stockout risk: Wk ${String(r.first_stockout_week).slice(-2)}` : ""}` : undefined}
+                        className={`px-3 py-1.5 text-right ${wosColor(r.wos, null, r.lead_time_weeks ?? 12)}`}
+                        title="WOS = stock on shelf (EOP) ÷ 8-week forward demand"
                       >{r.wos ?? "—"}</td>
+                      <td
+                        className={`px-3 py-1.5 text-right ${wosColor(r.fwd_coverage_wks, null, r.lead_time_weeks ?? 12)}`}
+                        title={r.fwd_coverage_wks != null ? `Forward Coverage = WOS + your in-transit orders = ${r.fwd_coverage_wks.toFixed(1)} wks${r.first_stockout_week ? ` · ⚠ Stockout risk: Wk ${String(r.first_stockout_week).slice(-2)}` : ""}` : "No forward coverage (ongoing/actualised week)"}
+                      >{r.fwd_coverage_wks != null ? r.fwd_coverage_wks.toFixed(1) : "—"}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
                     </>}
 
