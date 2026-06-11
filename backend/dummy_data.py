@@ -1640,45 +1640,57 @@ def get_exceptions_panel() -> List[Dict]:
 
     Groups week-level coverage data into SKU×channel summary rows so the panel
     shows "N SKUs need attention" not "480 week rows."  Each row carries the
-    worst-coverage week for that combo plus a count of total affected weeks.
+    worst-coverage week for that combo plus the actual problem weeks:
+      - stockout exceptions → weeks where EOP actually hits 0 (_stockout)
+      - excess exceptions   → weeks where coverage genuinely exceeds threshold
+    This avoids showing "observation weeks" (weeks from which you notice an
+    upcoming problem) and instead shows WHERE the problem occurs.
     """
     all_rows = get_agg_rows()
     severity_order = {"critical": 0, "low": 1, "excess": 2}
 
-    # Classify each planning week
+    # Pass 1: collect actual problem weeks per combo (what the planner cares about)
+    # and classify each observation week to determine exception_status.
+    actual_stockout_wks: Dict[tuple, List[int]] = {}  # weeks where EOP = 0
+    actual_excess_wks: Dict[tuple, List[int]] = {}    # weeks where cov > threshold
+
     raw: List[Dict] = []
     for r in all_rows:
         if r.get("actualised") or r.get("is_ongoing"):
             continue
-        hc = r["hierarchy_code"]
-        m  = get_effective_metrics(hc)
-        lt = m["lead_time_weeks"]
+        hc  = r["hierarchy_code"]
+        ch  = r["channel"]
+        key = (hc, ch)
+        m   = get_effective_metrics(hc)
+        lt  = m["lead_time_weeks"]
         cov = r.get("fwd_coverage_wks") if r.get("fwd_coverage_wks") is not None else r.get("wos")
         if cov is None:
             continue
+
+        # Track actual EOP=0 weeks (real stockout, not observation)
+        if r.get("_stockout"):
+            actual_stockout_wks.setdefault(key, []).append(r["current_week"])
+
+        # Track actual excess weeks
+        if cov > get_target_wos(hc, ch) * 1.5:
+            actual_excess_wks.setdefault(key, []).append(r["current_week"])
 
         order_gap = max(0, r.get("recomm_receipt_units", 0) - r.get("on_order_placed_total_unit", 0))
         first_so  = r.get("first_stockout_week")
 
         # Classification uses the EOP chain (real stockout timing), NOT FC.
-        # FC is display only — it sums pipeline flat and can mask arrival-timing gaps.
         if r.get("_stockout_in_lt"):
-            # Will run dry within lead time → reordering now can't save it.
             status = "critical"
         elif first_so is not None and order_gap > 0:
-            # Stockout later in the horizon AND there's room to order more.
             status = "low"
-        elif cov > get_target_wos(hc, r["channel"]) * 1.5:
-            # Excess = holding 50%+ over your OWN target buffer (target_wos).
-            # Target-aware, not lead-time-based: a short LT with a high target_wos
-            # shouldn't auto-flag (you asked to hold that much).
+        elif cov > get_target_wos(hc, ch) * 1.5:
             status = "excess"
         else:
             continue
         raw.append({
             "hierarchy_code":    hc,
             "l2_name":           r.get("l2_name", ""),
-            "channel":           r["channel"],
+            "channel":           ch,
             "current_week":      r["current_week"],
             "exception_status":  status,
             "coverage_wks":      round(cov, 1),
@@ -1688,37 +1700,48 @@ def get_exceptions_panel() -> List[Dict]:
             "first_stockout_week": r.get("first_stockout_week"),
         })
 
-    # Group by SKU×channel: surface worst week, collect weeks per severity
+    # Pass 2: group by SKU×channel — pick worst representative week, attach actual
+    # problem week ranges (not observation weeks).
     by_combo: Dict[tuple, Dict] = {}
     for row in raw:
         key = (row["hierarchy_code"], row["channel"])
         status = row["exception_status"]
         if key not in by_combo:
-            by_combo[key] = {**row, "affected_by_status": {status: [row["current_week"]]}}
+            by_combo[key] = {**row}
         else:
             existing = by_combo[key]
-            existing["affected_by_status"].setdefault(status, []).append(row["current_week"])
             # Pick the representative "worst" week:
             #   - higher severity always wins
-            #   - same severity: stockout (critical/low) → LOWEST coverage (closest to dry)
-            #                    excess               → HIGHEST coverage (most overstocked)
+            #   - same severity: stockout → LOWEST coverage (closest to dry)
+            #                    excess   → HIGHEST coverage (most overstocked)
             same_sev = status == existing["exception_status"]
             if same_sev:
-                if status == "excess":
-                    worse = row["coverage_wks"] > existing["coverage_wks"]
-                else:
-                    worse = row["coverage_wks"] < existing["coverage_wks"]
+                worse = (row["coverage_wks"] > existing["coverage_wks"]
+                         if status == "excess"
+                         else row["coverage_wks"] < existing["coverage_wks"])
             else:
                 worse = severity_order[status] < severity_order[existing["exception_status"]]
             if worse:
-                by_status = existing["affected_by_status"]
-                by_combo[key] = {**row, "affected_by_status": by_status}
+                by_combo[key] = {**row}
 
-    # Sort each per-status list and derive total count
-    for v in by_combo.values():
-        for s in v["affected_by_status"]:
-            v["affected_by_status"][s] = sorted(v["affected_by_status"][s])
-        v["affected_weeks"] = sum(len(wks) for wks in v["affected_by_status"].values())
+    # Pass 3: attach actual problem week ranges to each combo row
+    for key, v in by_combo.items():
+        rep_status = v["exception_status"]
+        affected: Dict[str, List[int]] = {}
+        if rep_status in ("critical", "low"):
+            so_wks = sorted(actual_stockout_wks.get(key, []))
+            if so_wks:
+                affected["critical"] = so_wks
+            elif v.get("first_stockout_week"):
+                # Stockout week itself may be outside planning grid (end of season);
+                # fall back to flagging the first_stockout_week as a single point.
+                affected["low"] = [v["first_stockout_week"]]
+        else:
+            ex_wks = sorted(actual_excess_wks.get(key, []))
+            if ex_wks:
+                affected["excess"] = ex_wks
+        v["affected_by_status"] = affected
+        v["affected_weeks"] = sum(len(wks) for wks in affected.values())
 
     result = list(by_combo.values())
     return sorted(result, key=lambda x: (severity_order[x["exception_status"]], x["coverage_wks"]))
