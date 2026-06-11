@@ -65,21 +65,21 @@ def _is_oo_locked(hc: int, wk: int) -> bool:
 #   case_pack       – minimum order quantity (round-up denominator)
 #   safety_weeks    – additional buffer added to look-ahead window
 HIERARCHY_METRICS = {
-    10001: {"air": 119.99, "auc": 44.0,  "peak_week": 26, "peak_units":  520,  # Running Shoes  – spring marathon season (late-spring peak)
+    10001: {"air": 119.99, "auc": 44.0,  "peak_week": 26, "peak_units":  160,  # Running Shoes  – spring marathon season (late-spring peak)
             "target_wos": 6, "lead_time_weeks": 14, "case_pack":  6, "safety_weeks": 2},
-    10002: {"air":  89.99, "auc": 30.0,  "peak_week": 25, "peak_units":  680,  # Casual Sneakers – summer
+    10002: {"air":  89.99, "auc": 30.0,  "peak_week": 25, "peak_units":  210,  # Casual Sneakers – summer
             "target_wos": 6, "lead_time_weeks": 12, "case_pack":  6, "safety_weeks": 2},
-    10003: {"air": 154.99, "auc": 55.0,  "peak_week": 41, "peak_units":  450,  # Ankle Boots    – fall
+    10003: {"air": 154.99, "auc": 55.0,  "peak_week": 41, "peak_units":  140,  # Ankle Boots    – fall
             "target_wos": 8, "lead_time_weeks": 16, "case_pack":  4, "safety_weeks": 3},
-    10004: {"air":  64.99, "auc": 21.0,  "peak_week": 22, "peak_units":  750,  # Sandals        – summer
+    10004: {"air":  64.99, "auc": 21.0,  "peak_week": 22, "peak_units":  230,  # Sandals        – summer
             "target_wos": 5, "lead_time_weeks": 10, "case_pack": 12, "safety_weeks": 1},
-    10005: {"air":  79.99, "auc": 27.0,  "peak_week": 38, "peak_units":  900,  # Denim Jeans    – back-to-school
+    10005: {"air":  79.99, "auc": 27.0,  "peak_week": 38, "peak_units":  280,  # Denim Jeans    – back-to-school
             "target_wos": 8, "lead_time_weeks": 14, "case_pack": 12, "safety_weeks": 2},
-    10006: {"air":  34.99, "auc": 11.0,  "peak_week": 26, "peak_units": 1400,  # Graphic Tees   – summer
+    10006: {"air":  34.99, "auc": 11.0,  "peak_week": 26, "peak_units":  430,  # Graphic Tees   – summer
             "target_wos": 6, "lead_time_weeks": 10, "case_pack": 24, "safety_weeks": 2},
-    10007: {"air":  69.99, "auc": 23.0,  "peak_week": 42, "peak_units":  800,  # Hoodies        – fall
+    10007: {"air":  69.99, "auc": 23.0,  "peak_week": 42, "peak_units":  250,  # Hoodies        – fall
             "target_wos": 8, "lead_time_weeks": 12, "case_pack": 12, "safety_weeks": 3},
-    10008: {"air":  44.99, "auc": 14.0,  "peak_week": 24, "peak_units": 1100,  # Activewear Shorts – summer
+    10008: {"air":  44.99, "auc": 14.0,  "peak_week": 24, "peak_units":  340,  # Activewear Shorts – summer
             "target_wos": 5, "lead_time_weeks": 10, "case_pack": 24, "safety_weeks": 1},
 }
 
