@@ -1127,6 +1127,49 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 None
             )
 
+            # Recomm receipt — order UP TO effective forward coverage, computed off
+            # the CHAINED eop (reflects current OOP), NOT a stale baseline.
+            #
+            #   eff_cov  = max(target_wos, LT + safety)
+            #   target   = min( eff_cov × 8wk_avg ,  Σ demand remaining to season end )
+            #   incoming = Σ total_receipt_units over next eff_cov weeks (ingested + OOP)
+            #   recomm   = max(0, target − EOP − incoming)            (round up to case pack)
+            #
+            # Three principles:
+            #   1. max(target_wos, LT+safety): the LT+safety floor matters when
+            #      target_wos < lead_time (e.g. LT=10, target=5) — you must hold enough
+            #      to survive the reorder gap or you stock out before an order lands.
+            #   2. Season-end taper (min with remaining demand): never target more
+            #      coverage than the demand actually left in the season, so long-LT
+            #      SKUs don't pile up unsellable stock at the tail.
+            #   3. Net ALL incoming supply (ingested + OOP) over the coverage horizon,
+            #      not just in-transit OOP — so recomm doesn't re-order stock the
+            #      committed ingested plan is already bringing.
+            #
+            # Net effect: recomm is 0 on a healthy SKU, fires only for a genuine gap,
+            # and tapers to 0 at season end. That's what makes "Accept Recomm"
+            # converge to the baseline drain instead of overstocking. Stockouts are
+            # still classified off the EOP chain (separate from recomm), so under-
+            # ordering would surface as an exception regardless.
+            if b.get("oo_locked"):
+                b["recomm_receipt_units"] = 0   # order here can't be received this season
+            else:
+                eff_cov = max(target_wos_s, look_ahead_s)
+                eff_target_eop = round(wos_avg_s * eff_cov)
+                remaining_demand = sum(
+                    px.get("written_sales_units", 0) for px in stream[i + 1 :]
+                )
+                target = min(eff_target_eop, remaining_demand)
+                incoming = sum(
+                    px.get("total_receipt_units", 0)
+                    for px in stream[i + 1 : i + 1 + int(round(eff_cov))]
+                )
+                raw = max(0, target - b["eop_units"] - incoming)
+                cp_s = m_s["case_pack"]
+                b["recomm_receipt_units"] = (
+                    int(_math.ceil(raw / cp_s) * cp_s) if (raw > 0 and cp_s > 0) else 0
+                )
+
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
 
@@ -1513,26 +1556,35 @@ def accept_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
     One-click replacement for manually editing OO Placed week-by-week.
     Returns count of rows updated.
     """
-    overrides = db_get_overrides()
-    updates: Dict[str, Dict] = {}
     count = 0
     for hc in hcs:
         for ch in channels:
-            for r in get_agg_rows(hc, ch):
-                if r.get("actualised") or r.get("is_ongoing"):
+            # Walk weeks CHRONOLOGICALLY, re-reading the chain after each accept.
+            # Recomm is chain-aware (computed off the live EOP), so once an order
+            # lands at W+LT and lifts downstream EOP, the downstream recomm shrinks
+            # — and drops to 0 once the season is filled. This is why we can't batch
+            # all weeks at once: a simultaneous accept-all used each week's BASELINE
+            # recomm (blind to the other orders) → every order landed and stacked,
+            # ballooning end-of-season EOP. Iterating converges instead.
+            weeks = sorted(
+                r["current_week"]
+                for r in get_agg_rows(hc, ch)
+                if not r.get("actualised")
+                and not r.get("is_ongoing")
+                and not r.get("oo_locked")
+            )
+            for wk in weeks:
+                fresh = next(
+                    (r for r in get_agg_rows(hc, ch) if r["current_week"] == wk),
+                    None,
+                )
+                if fresh is None or fresh.get("oo_locked"):
                     continue
-                if r.get("oo_locked"):
-                    continue   # order placed here can't be received this season
-                recomm = int(r.get("recomm_receipt_units", 0))
-                key = _ovr_key(hc, r["current_week"], ch)
-                entry = dict(overrides.get(key, {}))
-                entry["on_order_placed_total_unit"] = float(recomm)
-                entry["_last_edited"] = "on_order_placed_total_unit"
-                updates[key] = entry
+                recomm = int(fresh.get("recomm_receipt_units", 0))
+                if recomm <= 0:
+                    continue   # already covered — nothing to order this week
+                apply_edit(hc, wk, ch, "on_order_placed_total_unit", float(recomm))
                 count += 1
-    if updates:
-        db_batch_upsert_overrides(updates)
-        _rebuild_pipeline_and_recomm(hcs, channels)
     return count
 
 
