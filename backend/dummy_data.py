@@ -1127,48 +1127,65 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 None
             )
 
-            # Recomm receipt — order UP TO effective forward coverage, computed off
-            # the CHAINED eop (reflects current OOP), NOT a stale baseline.
-            #
-            #   eff_cov  = max(target_wos, LT + safety)
-            #   target   = min( eff_cov × 8wk_avg ,  Σ demand remaining to season end )
-            #   incoming = Σ total_receipt_units over next eff_cov weeks (ingested + OOP)
-            #   recomm   = max(0, target − EOP − incoming)            (round up to case pack)
-            #
-            # Three principles:
-            #   1. max(target_wos, LT+safety): the LT+safety floor matters when
-            #      target_wos < lead_time (e.g. LT=10, target=5) — you must hold enough
-            #      to survive the reorder gap or you stock out before an order lands.
-            #   2. Season-end taper (min with remaining demand): never target more
-            #      coverage than the demand actually left in the season, so long-LT
-            #      SKUs don't pile up unsellable stock at the tail.
-            #   3. Net ALL incoming supply (ingested + OOP) over the coverage horizon,
-            #      not just in-transit OOP — so recomm doesn't re-order stock the
-            #      committed ingested plan is already bringing.
-            #
-            # Net effect: recomm is 0 on a healthy SKU, fires only for a genuine gap,
-            # and tapers to 0 at season end. That's what makes "Accept Recomm"
-            # converge to the baseline drain instead of overstocking. Stockouts are
-            # still classified off the EOP chain (separate from recomm), so under-
-            # ordering would surface as an exception regardless.
+        # ── Third pass: MARGINAL recomm (the displayed column) ───────────────
+        # Each week's recomm = what "Accept Recomm" would actually ORDER that week,
+        # computed against the chain INCLUDING earlier planning weeks' orders
+        # simulated as already placed. So the column equals what Accept does, and
+        # its sum equals the real order total — instead of the old per-week
+        # INDEPENDENT values that smeared one coverage gap across every week (user
+        # saw a 7-week column of 48s but Accept correctly placed a single order).
+        #
+        # Order-up-to math, unchanged per week:
+        #   eff_cov  = max(target_wos, LT + safety)
+        #   target   = min( eff_cov × 8wk_avg ,  Σ demand remaining to season end )
+        #   incoming = Σ receipts over next eff_cov weeks (ingested + OOP + sim orders)
+        #   recomm   = max(0, target − EOP − incoming)            (round up to case pack)
+        #
+        # Mechanics mirror accept_recomm_receipts exactly, but in-memory (no DB
+        # writes): walk planning weeks chronologically; at each, compute recomm off
+        # the SIMULATED chain; if > 0, "place" it — it lands at W+LT and lifts sim
+        # receipts/EOP downstream, so later weeks see it as incoming and their own
+        # marginal recomm shrinks to 0 once the gap is covered. This is why Accept
+        # converges to the season drain instead of overstocking, and why the column
+        # is now consistent with it.
+        #
+        # FC / stockout signals (second pass, above) stay on the REAL chain (current
+        # OOP) — they describe the plan as-is, not the hypothetical accept-all.
+        n = len(stream)
+        cp_s    = m_s["case_pack"]
+        eff_cov = max(target_wos_s, look_ahead_s)
+        cov_w   = int(round(eff_cov))
+        sim_rcpt = [b["total_receipt_units"] for b in stream]
+        sim_eop  = [b["eop_units"] for b in stream]
+
+        def _rechain(from_idx, _eop=sim_eop, _rcpt=sim_rcpt, _stream=stream, _n=n):
+            # Re-propagate EOP forward from a simulated order's landing week.
+            # Landing weeks are always future planning weeks (i+LT > i > ongoing),
+            # so this never rewrites an actualised/ongoing EOP.
+            for j in range(from_idx, _n):
+                prev = _eop[j - 1] if j - 1 >= 0 else _stream[j]["bop_units"]
+                _eop[j] = max(0, prev - _stream[j]["written_sales_units"] + _rcpt[j])
+
+        for i, b in enumerate(stream):
+            if b.get("actualised") or b.get("is_ongoing"):
+                continue
             if b.get("oo_locked"):
                 b["recomm_receipt_units"] = 0   # order here can't be received this season
-            else:
-                eff_cov = max(target_wos_s, look_ahead_s)
-                eff_target_eop = round(wos_avg_s * eff_cov)
-                remaining_demand = sum(
-                    px.get("written_sales_units", 0) for px in stream[i + 1 :]
-                )
-                target = min(eff_target_eop, remaining_demand)
-                incoming = sum(
-                    px.get("total_receipt_units", 0)
-                    for px in stream[i + 1 : i + 1 + int(round(eff_cov))]
-                )
-                raw = max(0, target - b["eop_units"] - incoming)
-                cp_s = m_s["case_pack"]
-                b["recomm_receipt_units"] = (
-                    int(_math.ceil(raw / cp_s) * cp_s) if (raw > 0 and cp_s > 0) else 0
-                )
+                continue
+            wos_i     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
+            wos_avg_i = wos_i / WOS_WINDOW if WOS_WINDOW > 0 else 0
+            eff_target_eop   = round(wos_avg_i * eff_cov)
+            remaining_demand = sum(px.get("written_sales_units", 0) for px in stream[i + 1 :])
+            target   = min(eff_target_eop, remaining_demand)
+            incoming = sum(sim_rcpt[i + 1 : i + 1 + cov_w])   # nets sim orders placed earlier
+            raw = max(0, target - sim_eop[i] - incoming)      # NOT b['eop_units'] — sim chain
+            recomm = int(_math.ceil(raw / cp_s) * cp_s) if (raw > 0 and cp_s > 0) else 0
+            b["recomm_receipt_units"] = recomm
+            if recomm > 0:
+                land = i + lead_time_s
+                if land < n:                # off-grid landing ⇒ would be oo_locked, never here
+                    sim_rcpt[land] += recomm
+                    _rechain(land)
 
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
