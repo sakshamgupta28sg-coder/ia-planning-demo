@@ -1127,44 +1127,46 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 None
             )
 
-        # ── Third pass: MARGINAL recomm (the displayed column) ───────────────
-        # Each week's recomm = what "Accept Recomm" would actually ORDER that week,
-        # computed against the chain INCLUDING earlier planning weeks' orders
-        # simulated as already placed. So the column equals what Accept does, and
-        # its sum equals the real order total — instead of the old per-week
-        # INDEPENDENT values that smeared one coverage gap across every week (user
-        # saw a 7-week column of 48s but Accept correctly placed a single order).
+        # ── Third pass: recomm = periodic TIMING-AWARE base-stock replenishment ─
+        # Each week's recomm = the order a planner should place THAT week to keep
+        # inventory healthy — a real reorder schedule, not one front-loaded lump.
         #
-        # Order-up-to math, unchanged per week:
-        #   eff_cov  = max(target_wos, LT + safety)
-        #   target   = min( eff_cov × 8wk_avg ,  Σ demand remaining to season end )
-        #   incoming = Σ receipts over next eff_cov weeks (ingested + OOP + sim orders)
-        #   recomm   = max(0, target − EOP − incoming)            (round up to case pack)
+        # Per week i, an order placed now ARRIVES at t = i + LT. Size it to bring the
+        # projected EOP AT ITS ARRIVAL WEEK t up to a forward-cover buffer:
+        #   buffer_w = max(target_wos, safety + 1)         weeks of cover to hold
+        #   target   = Σ demand over weeks [t+1 .. t+buffer_w]   (cover from arrival)
+        #   recomm   = max(0, target − projected_EOP[t])   ⌈round up to case pack⌉
         #
-        # Mechanics mirror accept_recomm_receipts exactly, but in-memory (no DB
-        # writes): walk planning weeks chronologically; at each, compute recomm off
-        # the SIMULATED chain; if > 0, "place" it — it lands at W+LT and lifts sim
-        # receipts/EOP downstream, so later weeks see it as incoming and their own
-        # marginal recomm shrinks to 0 once the gap is covered. This is why Accept
-        # converges to the season drain instead of overstocking, and why the column
-        # is now consistent with it.
+        # Walked chronologically on a SIMULATED chain: placing week i's order lifts
+        # sim receipts at t and re-chains EOP downstream, so week i+1 sees it and only
+        # tops up the NEW marginal gap. Steady state → each week reorders ≈ one week's
+        # demand → orders fire weekly and deliveries stream in LT-shifted, MATCHING
+        # demand instead of dumping the whole season at once.
         #
-        # FC / stockout signals (second pass, above) stay on the REAL chain (current
-        # OOP) — they describe the plan as-is, not the hypothetical accept-all.
+        # Why target the ARRIVAL week (not the current week): coverage is timing-aware.
+        # A single lump landing at t+LT can fool a window-SUM ("enough is coming") yet
+        # leave you dry until it lands. Targeting projected EOP at each order's own
+        # arrival week walks the real chain, so it neither starves the gap nor piles a
+        # season's worth into one delivery. (This replaced an order-up-to-eff_cov
+        # policy capped at Σ-all-remaining-demand, which collapsed to one giant order:
+        # 8-week stockout then ~1.8k units of dead end-of-season overstock under load.)
+        #
+        # The column == what Accept places (Accept walks the same weeks). FC / stockout
+        # signals (second pass) stay on the REAL chain (current OOP), not this sim.
         n = len(stream)
-        cp_s    = m_s["case_pack"]
-        eff_cov = max(target_wos_s, look_ahead_s)
-        cov_w   = int(round(eff_cov))
+        cp_s     = m_s["case_pack"]
+        buffer_w = max(target_wos_s, m_s["safety_weeks"] + 1)
+        sales    = [b.get("written_sales_units", 0) for b in stream]
         sim_rcpt = [b["total_receipt_units"] for b in stream]
         sim_eop  = [b["eop_units"] for b in stream]
 
-        def _rechain(from_idx, _eop=sim_eop, _rcpt=sim_rcpt, _stream=stream, _n=n):
-            # Re-propagate EOP forward from a simulated order's landing week.
-            # Landing weeks are always future planning weeks (i+LT > i > ongoing),
+        def _rechain(from_idx, _eop=sim_eop, _rcpt=sim_rcpt, _sales=sales, _stream=stream, _n=n):
+            # Re-propagate EOP forward from a simulated order's arrival week.
+            # Arrival weeks are always future planning weeks (i+LT > i > ongoing),
             # so this never rewrites an actualised/ongoing EOP.
             for j in range(from_idx, _n):
                 prev = _eop[j - 1] if j - 1 >= 0 else _stream[j]["bop_units"]
-                _eop[j] = max(0, prev - _stream[j]["written_sales_units"] + _rcpt[j])
+                _eop[j] = max(0, prev - _sales[j] + _rcpt[j])
 
         for i, b in enumerate(stream):
             if b.get("actualised") or b.get("is_ongoing"):
@@ -1172,20 +1174,28 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
             if b.get("oo_locked"):
                 b["recomm_receipt_units"] = 0   # order here can't be received this season
                 continue
-            wos_i     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
-            wos_avg_i = wos_i / WOS_WINDOW if WOS_WINDOW > 0 else 0
-            eff_target_eop   = round(wos_avg_i * eff_cov)
-            remaining_demand = sum(px.get("written_sales_units", 0) for px in stream[i + 1 :])
-            target   = min(eff_target_eop, remaining_demand)
-            incoming = sum(sim_rcpt[i + 1 : i + 1 + cov_w])   # nets sim orders placed earlier
-            raw = max(0, target - sim_eop[i] - incoming)      # NOT b['eop_units'] — sim chain
+            t = i + lead_time_s                 # arrival week of an order placed now
+            if t >= n:                          # lands past season end (already oo_locked)
+                b["recomm_receipt_units"] = 0
+                continue
+            target = sum(sales[t + 1 : t + 1 + buffer_w])   # cover buffer_w wks from arrival
+            # Size against the UNCLAMPED projected position at the arrival week, i.e.
+            #   pos_t = EOP[t-1] − sales[t] + receipts[t]      (no max(0,·) floor)
+            # not the clamped sim_eop[t]. If week t is itself stocked out, sim_eop[t]
+            # floors at 0 and hides the unmet-demand debt — sizing against that
+            # under-orders, EOP never reaches target, and recomm re-fires forever
+            # (non-idempotent). Sizing against pos_t orders enough to actually serve
+            # week t's demand AND reach the buffer, so EOP[t] hits target and re-reads
+            # return 0. (EOP[t-1] is already lost-sales-clamped, so this does not
+            # backorder prior lost demand — it only covers week t onward.)
+            prev_eop = sim_eop[t - 1] if t - 1 >= 0 else stream[t]["bop_units"]
+            pos_t = prev_eop - sales[t] + sim_rcpt[t]
+            raw = max(0, target - pos_t)
             recomm = int(_math.ceil(raw / cp_s) * cp_s) if (raw > 0 and cp_s > 0) else 0
             b["recomm_receipt_units"] = recomm
             if recomm > 0:
-                land = i + lead_time_s
-                if land < n:                # off-grid landing ⇒ would be oo_locked, never here
-                    sim_rcpt[land] += recomm
-                    _rechain(land)
+                sim_rcpt[t] += recomm
+                _rechain(t)
 
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
