@@ -83,6 +83,32 @@ HIERARCHY_METRICS = {
             "target_wos": 5, "lead_time_weeks": 10, "case_pack": 24, "safety_weeks": 1},
 }
 
+# Committed-supply (buy) posture per SKU — models a REAL pre-season buy instead of
+# auto-stocking every week to target. A buyer commits an initial inventory + a schedule
+# of receipts that covers the early/peak weeks; after `commit_through` the committed buy
+# is exhausted and the planner must REORDER (place OO) to cover the rest of the season —
+# which is the whole job of the replenishment engine.
+#
+#   open_wos       opening inventory entering the planning horizon, in weeks of fwd demand
+#   commit_through last week-number (wk%100) with committed ingested receipts; 0 after
+#   commit_mult    how generous the committed buy is vs target coverage
+#                    1.0 = buy to hold target;  >1 = over-bought (excess/markdown);
+#                    <1 = under-bought (lean → genuine stockout risk, esp. long LT)
+#
+# Mix is deliberate: most SKUs need a steady reorder cadence; Sandals/Activewear are
+# over-bought early-peak (excess flags); Ankle Boots/Hoodies are under-bought late-peak
+# with long lead times (must reorder early or stock out).
+SUPPLY_PROFILE = {
+    10001: {"open_wos": 5, "commit_through": 33, "commit_mult": 1.0},  # Running Shoes  – normal, reorder back half
+    10002: {"open_wos": 5, "commit_through": 32, "commit_mult": 1.0},  # Casual Sneakers – normal
+    10003: {"open_wos": 3, "commit_through": 30, "commit_mult": 0.6},  # Ankle Boots    – under-bought, LT16, late peak
+    10004: {"open_wos": 9, "commit_through": 46, "commit_mult": 1.7},  # Sandals        – over-bought early-peak → excess
+    10005: {"open_wos": 4, "commit_through": 34, "commit_mult": 0.9},  # Denim Jeans    – tight, reorder for late peak
+    10006: {"open_wos": 5, "commit_through": 33, "commit_mult": 1.0},  # Graphic Tees   – normal
+    10007: {"open_wos": 4, "commit_through": 32, "commit_mult": 0.7},  # Hoodies        – under-bought, late peak
+    10008: {"open_wos": 7, "commit_through": 40, "commit_mult": 1.4},  # Activewear     – mild over-bought early-peak
+}
+
 CHANNEL_SPLIT = {"Ecom": 0.55, "Indirect": 0.30, "Store": 0.15}
 
 # The fiscal week that is currently in-flight (not yet actualised, but not open for editing)
@@ -202,7 +228,7 @@ def generate_wp_data() -> List[Dict]:
                 for wn in range(22, 22 + WOS_WINDOW)
             )
             _fwd_avg = _fwd / WOS_WINDOW
-            bop[_ch] = round(_fwd_avg * (m["target_wos"] + 2))
+            bop[_ch] = round(_fwd_avg * SUPPLY_PROFILE[hc]["open_wos"])
 
         for ch in CHANNELS:
             wh = WAREHOUSE_SUB_CHANNELS[ch]
@@ -314,17 +340,25 @@ def generate_wp_data() -> List[Dict]:
                 r["bop_cost"]  = round(prev_eop * m["auc"], 2)
                 sales = r["written_sales_units"]
                 eop_no_rcpt = max(0, prev_eop - sales)
-                # Target EOP = target_wos × 8-week forward avg
+                # Committed (ingested) supply = the pre-season BUY, not an auto-top-up.
+                # Through `commit_through` the buyer holds (target_wos × commit_mult) weeks
+                # of cover; after that the committed buy is exhausted → receipt = 0 and the
+                # planner must reorder (place OO) to avoid running out. This is what gives
+                # the replenishment engine real work instead of a pre-balanced season.
                 wos_dem  = _WOS_DEMAND_INDEX.get((hc, ch, wk), 0)
                 fwd_avg8 = wos_dem / WOS_WINDOW if WOS_WINDOW > 0 else 0
-                target_eop = round(m["target_wos"] * fwd_avg8)
-                if target_eop <= eop_no_rcpt:
-                    receipt = 0
+                prof = SUPPLY_PROFILE[hc]
+                if (wk % 100) <= prof["commit_through"]:
+                    target_eop = round(m["target_wos"] * prof["commit_mult"] * fwd_avg8)
+                    if target_eop <= eop_no_rcpt:
+                        receipt = 0
+                    else:
+                        raw     = target_eop - eop_no_rcpt
+                        receipt = int(_math.ceil(raw / cp) * cp) if cp > 0 else int(raw)
                 else:
-                    raw     = target_eop - eop_no_rcpt
-                    receipt = int(_math.ceil(raw / cp) * cp) if cp > 0 else int(raw)
+                    receipt = 0   # committed buy exhausted — planner reorders from here
                 eop = eop_no_rcpt + receipt
-                # This target-WOS receipt schedule IS the ingested supply baseline.
+                # This committed-buy receipt schedule IS the ingested supply baseline.
                 r["total_receipt_units"]         = receipt
                 r["ingested_receipt_units"]      = receipt   # independent supply (immutable)
                 r["on_order_placed_total_unit"]  = 0         # planner places orders ON TOP
