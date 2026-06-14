@@ -1224,7 +1224,15 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
             # backorder prior lost demand — it only covers week t onward.)
             prev_eop = sim_eop[t - 1] if t - 1 >= 0 else stream[t]["bop_units"]
             pos_t = prev_eop - sales[t] + sim_rcpt[t]
-            raw = max(0, target - pos_t)
+            # Net the supply ALREADY arriving across the coverage window (ingested +
+            # earlier-placed orders), not just what's on hand at t. Without this the
+            # order fills EOP[t] to a full buffer while committed ingested keeps landing
+            # in t+1..t+buffer_w on top — over-ordering, which piles unsold stock at
+            # season end (e.g. Graphic Tees accept left ~35 dead units → tail WOS 19→64).
+            # Each later arrival week is still independently protected by its own
+            # iteration, so netting here can't under-cover a genuine gap.
+            incoming = sum(sim_rcpt[t + 1 : t + 1 + buffer_w])
+            raw = max(0, target - pos_t - incoming)
             recomm = int(_math.ceil(raw / cp_s) * cp_s) if (raw > 0 and cp_s > 0) else 0
             b["recomm_receipt_units"] = recomm
             if recomm > 0:
