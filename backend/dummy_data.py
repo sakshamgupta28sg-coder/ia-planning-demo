@@ -214,6 +214,67 @@ def _weeks_of_cover(stock, idx: int, sales: list, fallback_rate: float) -> float
     return round(weeks, 2)
 
 
+def _level_order_schedule(stream, lead_time, cp):
+    """Deadline-feasible, MINIMUM-PEAK order schedule for one SKU×channel stream.
+
+    Replaces "fill the whole forward buffer at the first reorder week" — which dumped a
+    season's buy into ONE order when lead time is long and demand ramps (Ankle Boots LT16:
+    324 units in wk21) — with a leveled plan that spreads orders across the unlocked weeks
+    while still covering every week, INCLUDING the locked tail, at the lowest possible peak
+    per-week order.
+
+    Returns `order[i]` = units to have ON ORDER at planning week i (case-pack multiples).
+    The caller turns it into the marginal recomm = max(0, order[i] − current OOP[i]).
+
+    Method: an order placed at week j arrives at j+LT, so to avoid unmet demand the orders
+    ARRIVED by any week w must cover `need(w)` = demand due by w net of starting position +
+    ingested supply. With consecutive orderable weeks the arrival weeks are consecutive, so
+    enforcing cumulative-orders[j] ≥ need(j+LT) (and the last orderable week ≥ the whole
+    tail) covers every week. Min peak M = max_j ⌈need(j+LT)/(#orderable ≤ j)⌉; a backward
+    pass gives the min-peak cumulative targets; rounding the CUMULATIVE target up to case
+    pack (not each order) keeps the total exact and only pulls supply EARLIER, so rounding
+    can never create a stockout. Verified: 0 unmet-demand stockout across all streams.
+    """
+    n = len(stream)
+    order = [0] * n
+    if cp <= 0 or lead_time < 0:
+        return order
+    isP   = [not s.get("actualised") and not s.get("is_ongoing") for s in stream]
+    sales = [s.get("written_sales_units", 0) for s in stream]
+    ing   = [int(s.get("ingested_receipt_units", 0)) for s in stream]
+    # starting position entering the planning horizon = EOP of the last actual/ongoing week
+    initpos = 0
+    for k in range(n):
+        if not isP[k]:
+            initpos = stream[k]["eop_units"]
+    orderable = [i for i in range(n) if isP[i] and (i + lead_time) < n]
+    if not orderable:
+        return order
+    cum_d = [0] * n; cum_i = [0] * n; sd = 0; si = 0
+    for w in range(n):
+        if isP[w]:
+            sd += sales[w]; si += ing[w]
+        cum_d[w] = sd; cum_i[w] = si
+    def need(w):
+        return max(0, cum_d[w] - initpos - cum_i[w])
+    R = {j: need(min(j + lead_time, n - 1)) for j in orderable}
+    R[orderable[-1]] = need(n - 1)              # last orderable week must cover the tail
+    M = float(cp); cnt = 0
+    for j in orderable:
+        cnt += 1
+        M = max(M, R[j] / cnt)
+    M = int(_math.ceil(M / cp) * cp)            # minimum feasible peak per-week order
+    cumO = {}; nxt = 0
+    for j in reversed(orderable):               # backward → min-peak cumulative targets
+        cumO[j] = max(R[j], nxt - M); nxt = cumO[j]
+    prev_r = 0
+    for j in orderable:                          # round CUMULATIVE up to case pack, then diff
+        r = max(prev_r, int(_math.ceil(cumO[j] / cp) * cp))
+        order[j] = r - prev_r
+        prev_r = r
+    return order
+
+
 def _compute_recomm_receipt(hc: int, ch: str, wk: int, eop_units: int) -> int:
     """Rolling OTB Forward Coverage model.
 
@@ -1236,64 +1297,24 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
         #
         # The column == what Accept places (Accept walks the same weeks). FC / stockout
         # signals (second pass) stay on the REAL chain (current OOP), not this sim.
-        n = len(stream)
-        cp_s     = m_s["case_pack"]
-        buffer_w = max(target_wos_s, m_s["safety_weeks"] + 1)
-        sales    = [b.get("written_sales_units", 0) for b in stream]
-        sim_rcpt = [b["total_receipt_units"] for b in stream]
-        sim_eop  = [b["eop_units"] for b in stream]
-
-        def _rechain(from_idx, _eop=sim_eop, _rcpt=sim_rcpt, _sales=sales, _stream=stream, _n=n):
-            # Re-propagate EOP forward from a simulated order's arrival week.
-            # Arrival weeks are always future planning weeks (i+LT > i > ongoing),
-            # so this never rewrites an actualised/ongoing EOP.
-            for j in range(from_idx, _n):
-                prev = _eop[j - 1] if j - 1 >= 0 else _stream[j]["bop_units"]
-                _eop[j] = max(0, prev - _sales[j] + _rcpt[j])
-
+        cp_s  = m_s["case_pack"]
+        # Recomm = a leveled, deadline-feasible order schedule (minimum peak per-week order),
+        # netted against what's already on order. Replaces the old "fill the whole forward
+        # buffer at the first reorder week" sizing, which dumped a season's buy into one
+        # order for long-LT ramping SKUs (Ankle Boots LT16: 324 in wk21) and — when a flat
+        # per-week cap was tried to spread it — under-ordered into a tail stockout. The
+        # leveled schedule spreads the buy across unlocked weeks AND covers every week incl.
+        # the locked tail (0 unmet-demand stockout across all SKU×channel streams).
+        sched = _level_order_schedule(stream, lead_time_s, cp_s)
         for i, b in enumerate(stream):
-            if b.get("actualised") or b.get("is_ongoing"):
+            if b.get("actualised") or b.get("is_ongoing") or b.get("oo_locked"):
+                b["recomm_receipt_units"] = 0   # locked: order here can't be received in season
                 continue
-            if b.get("oo_locked"):
-                b["recomm_receipt_units"] = 0   # order here can't be received this season
-                continue
-            t = i + lead_time_s                 # arrival week of an order placed now
-            if t >= n:                          # lands past season end (already oo_locked)
-                b["recomm_receipt_units"] = 0
-                continue
-            target = sum(sales[t + 1 : t + 1 + buffer_w])   # cover buffer_w wks from arrival
-            # Size against the UNCLAMPED projected position at the arrival week, i.e.
-            #   pos_t = EOP[t-1] − sales[t] + receipts[t]      (no max(0,·) floor)
-            # not the clamped sim_eop[t]. If week t is itself stocked out, sim_eop[t]
-            # floors at 0 and hides the unmet-demand debt — sizing against that
-            # under-orders, EOP never reaches target, and recomm re-fires forever
-            # (non-idempotent). Sizing against pos_t orders enough to actually serve
-            # week t's demand AND reach the buffer, so EOP[t] hits target and re-reads
-            # return 0. (EOP[t-1] is already lost-sales-clamped, so this does not
-            # backorder prior lost demand — it only covers week t onward.)
-            prev_eop = sim_eop[t - 1] if t - 1 >= 0 else stream[t]["bop_units"]
-            pos_t = prev_eop - sales[t] + sim_rcpt[t]
-            # Net the supply ALREADY arriving across the coverage window (ingested +
-            # earlier-placed orders), not just what's on hand at t. Without this the
-            # order fills EOP[t] to a full buffer while committed ingested keeps landing
-            # in t+1..t+buffer_w on top — over-ordering, which piles unsold stock at
-            # season end (e.g. Graphic Tees accept left ~35 dead units → tail WOS 19→64).
-            # Each later arrival week is still independently protected by its own
-            # iteration, so netting here can't under-cover a genuine gap.
-            incoming = sum(sim_rcpt[t + 1 : t + 1 + buffer_w])
-            raw = max(0, target - pos_t - incoming)
-            recomm = int(_math.ceil(raw / cp_s) * cp_s) if (raw > 0 and cp_s > 0) else 0
-            # NOTE: a per-week "spread cap" was tried here (limit each order to ~1.5× the
-            # arrival-window avg so a long-LT lump streams across weeks) and REVERTED — it
-            # under-ordered. This policy fills each arrival week independently, so a capped
-            # week's shortfall is never re-filled by a later week; when most demand sits in
-            # LOCKED weeks (long LT, e.g. Ankle Boots LT16) there's no deferral room and the
-            # total ordered drops → tail stockout. A correct spread must roll the deficit
-            # forward into later weeks' targets (lock-aware) — not a flat per-week min.
-            b["recomm_receipt_units"] = recomm
-            if recomm > 0:
-                sim_rcpt[t] += recomm
-                _rechain(t)
+            # Marginal = gap from the leveled target to what's already on order. Accept walks
+            # weeks chronologically and sets OOP = this, reproducing the schedule from a clean
+            # baseline; a re-read then returns 0 (idempotent). Column == what Accept places.
+            on_order = int(b.get("on_order_placed_total_unit", 0))
+            b["recomm_receipt_units"] = max(0, int(sched[i]) - on_order)
 
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
