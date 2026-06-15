@@ -932,7 +932,10 @@ export default function WPPage() {
     const lowLine    = isForward ? leadTime : tw;
     const excessLine = isForward ? leadTime + tw : tw * 1.5;
     if (cov < lowLine) {
-      if (!hasStockoutRisk) return "text-emerald-400";                // benign low → healthy
+      // benign low (no real stockout risk) = planned end-of-season drawdown, or thin on-hand
+      // the pipeline covers. NEUTRAL grey — not green ("healthy" would mislead at near-zero
+      // stock) and not red ("alarm" would false-flag intentional runout).
+      if (!hasStockoutRisk) return "text-slate-400";
       return cov < lowLine * 0.5 ? "text-red-400 font-semibold" : "text-amber-400";
     }
     if (cov > excessLine)        return "text-red-400";               // genuine excess
@@ -2012,7 +2015,7 @@ export default function WPPage() {
           <div className="px-4 py-2 border-t border-slate-700 flex flex-wrap gap-4 text-[10px] text-slate-500">
             <span><span className="inline-block w-2 h-2 rounded-full bg-violet-400 mr-1" />● past week (actuals available, locked)</span>
             <span>⚡ ongoing week (in-flight, locked)</span>
-            <span>WOS: <span className="text-red-400">red</span> critical/excess · <span className="text-amber-400">amber</span> low/high · <span className="text-emerald-400">green</span> healthy (WOS vs target, FC vs lead time; low only flags on real stockout risk)</span>
+            <span>WOS/FC: <span className="text-red-400">red</span> critical/excess · <span className="text-amber-400">amber</span> low risk/high · <span className="text-emerald-400">green</span> healthy · <span className="text-slate-400">grey</span> low but no stockout risk (planned drawdown / pipeline-covered). WOS vs target, FC vs lead time.</span>
             <span>🔒 = cell cannot be edited</span>
           </div>
         )}
