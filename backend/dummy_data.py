@@ -1283,21 +1283,13 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
             incoming = sum(sim_rcpt[t + 1 : t + 1 + buffer_w])
             raw = max(0, target - pos_t - incoming)
             recomm = int(_math.ceil(raw / cp_s) * cp_s) if (raw > 0 and cp_s > 0) else 0
-            # Spread cap — don't dump a whole buffer in one order. Long lead time + a
-            # demand ramp makes the first reorder land a full buffer of PEAK demand at
-            # once (e.g. Ankle Boots LT16: 324 units in wk21) → in-transit pipeline and
-            # held inventory both balloon. Cap each week at ~1.5× the avg demand of the
-            # arrival-coverage window so the catch-up STREAMS across consecutive weeks.
-            # The _rechain below leaves the uncovered remainder for the next week's order
-            # to pick up (and re-chaining lowers its projected EOP, so it fires) → peak
-            # inventory drops, arrivals stream in, no stockout. The 1.5× floor keeps the
-            # peak covered (tighter ratios starved it); floored at one case pack so a cap
-            # never blocks a needed buy. Bites ONLY when the natural order exceeds it —
-            # short-LT / flat-demand SKUs order under the cap and are untouched.
-            if recomm > 0 and cp_s > 0 and buffer_w > 0:
-                arr_avg = sum(sales[t : t + buffer_w]) / buffer_w
-                cap = max(cp_s, int(_math.ceil(1.5 * arr_avg / cp_s) * cp_s))
-                recomm = min(recomm, cap)
+            # NOTE: a per-week "spread cap" was tried here (limit each order to ~1.5× the
+            # arrival-window avg so a long-LT lump streams across weeks) and REVERTED — it
+            # under-ordered. This policy fills each arrival week independently, so a capped
+            # week's shortfall is never re-filled by a later week; when most demand sits in
+            # LOCKED weeks (long LT, e.g. Ankle Boots LT16) there's no deferral room and the
+            # total ordered drops → tail stockout. A correct spread must roll the deficit
+            # forward into later weeks' targets (lock-aware) — not a flat per-week min.
             b["recomm_receipt_units"] = recomm
             if recomm > 0:
                 sim_rcpt[t] += recomm
