@@ -191,39 +191,55 @@ def get_portfolio():
                 "_modified":           False,
                 # Exception tracking (populated below)
                 "_planning_coverages": [],
+                "_has_stockout":       False,   # genuine unmet demand any planning wk
+                "_has_stockout_in_lt": False,   # unmet demand within LT (unfixable now)
             }
         per_hc[hc]["written_sales_units"]   += r["written_sales_units"]
         per_hc[hc]["written_sales_dollars"]  = round(per_hc[hc]["written_sales_dollars"] + r["written_sales_dollars"], 2)
         per_hc[hc]["written_gm_dollar"]      = round(per_hc[hc]["written_gm_dollar"]      + r["written_gm_dollar"], 2)
         if r["_modified"]:
             per_hc[hc]["_modified"] = True
-        # Collect coverage values from planning weeks for exception flagging
+        # Collect signals from planning weeks. Status keys off the GENUINE-stockout
+        # chain (real unmet demand) — which already excludes intentional end-of-season
+        # runout — NOT raw coverage. Coverage min/max kept only for the displayed
+        # number + excess (overstock) detection. This stops thin-but-planned tail
+        # runout from false-flagging critical (e.g. Sandals).
         if not r.get("actualised") and not r.get("is_ongoing"):
             cov = r.get("fwd_coverage_wks") if r.get("fwd_coverage_wks") is not None else r.get("wos")
             if cov is not None:
                 per_hc[hc]["_planning_coverages"].append(cov)
+            if r.get("_stockout"):
+                per_hc[hc]["_has_stockout"] = True
+            if r.get("_stockout_in_lt"):
+                per_hc[hc]["_has_stockout_in_lt"] = True
 
     for b in per_hc.values():
         td = b["written_sales_dollars"]
         b["avg_gm_perc"] = round(b["written_gm_dollar"] / td, 4) if td else 0
 
-        # Derive exception status from worst planning-week coverage vs lead time
-        covs = b.pop("_planning_coverages")
+        # Status from real unmet demand, not raw coverage:
+        #   critical = stockout WITHIN lead time → can't fix by ordering now (too late)
+        #   low      = genuine stockout, but beyond LT → still fixable by reordering
+        #   excess   = no stockout, but holding > 3× lead time of cover (overstock)
+        #   ok       = survives demand, sane cover
+        # Terminal end-of-season runout is already excluded from the _stockout chain,
+        # so planned drain-to-zero no longer trips critical.
+        covs      = b.pop("_planning_coverages")
+        has_so    = b.pop("_has_stockout", False)
+        has_so_lt = b.pop("_has_stockout_in_lt", False)
         if covs:
-            hc    = b["hierarchy_code"]
-            lt    = get_effective_metrics(hc)["lead_time_weeks"]
-            mn    = min(covs)
-            mx    = max(covs)
-            if mn < lt * 0.5:
+            lt = get_effective_metrics(b["hierarchy_code"])["lead_time_weeks"]
+            mx = max(covs)
+            if has_so_lt:
                 status = "critical"
-            elif mn < lt:
+            elif has_so:
                 status = "low"
             elif mx > lt * 3:
                 status = "excess"
             else:
                 status = "ok"
             b["exception_status"]   = status
-            b["min_coverage_wks"]   = round(mn, 1)
+            b["min_coverage_wks"]   = round(min(covs), 1)
         else:
             b["exception_status"]   = "ok"
             b["min_coverage_wks"]   = None

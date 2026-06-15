@@ -914,15 +914,20 @@ export default function WPPage() {
     if (v < -0.05) return "text-red-400";     // TY below LY
     return "text-slate-300";
   }
-  function wosColor(w: number | null, fc: number | null, leadTime: number, targetWos?: number) {
-    if (w === null || w === undefined) return "text-slate-500";
-    // Use forward coverage (EOP + in-transit pipeline) when available; fall back to WOS
-    const cov = fc ?? w;
-    // Stockout risk is lead-time-based; excess is target-based (respect your target_wos).
-    const excessLine = targetWos && targetWos > 0 ? targetWos * 1.5 : leadTime * 3;
+  // Colors a coverage figure. `isForward` = the value is Forward Coverage (EOP +
+  // in-transit pipeline), not plain on-hand WOS. Forward coverage legitimately runs
+  // as high as ~lead time + target (you MUST hold a pipeline when LT is long), so it
+  // gets an LT-aware excess line — otherwise a normal long-LT pipeline (e.g. FC≈22 at
+  // LT16) falsely shows red. Plain WOS is on-hand only, so it keeps the tight
+  // target-based excess line.
+  function wosColor(cov: number | null, leadTime: number, targetWos?: number, isForward = false) {
+    if (cov === null || cov === undefined) return "text-slate-500";
     if (cov < leadTime * 0.5)  return "text-red-400 font-semibold";  // critical stock-out risk
     if (cov < leadTime)        return "text-amber-400";               // ordering needed
-    if (cov > excessLine)      return "text-red-400";                 // excess vs target
+    const excessLine = isForward
+      ? leadTime + (targetWos && targetWos > 0 ? targetWos : leadTime)  // pipeline-aware
+      : (targetWos && targetWos > 0 ? targetWos * 1.5 : leadTime * 3);  // on-hand vs target
+    if (cov > excessLine)        return "text-red-400";               // genuine excess
     if (cov > excessLine * 0.85) return "text-amber-400";             // approaching excess
     return "text-emerald-400";                                        // healthy
   }
@@ -1908,11 +1913,11 @@ export default function WPPage() {
                       <td className="px-3 py-1.5 text-right text-slate-400" title="Stock arriving this week (from orders placed lead-time weeks ago). Read-only — driven by OO Placed.">{fmtU(r.total_receipt_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
                       <td
-                        className={`px-3 py-1.5 text-right ${wosColor(r.wos, null, r.lead_time_weeks ?? 12, r.target_wos)}`}
+                        className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.lead_time_weeks ?? 12, r.target_wos)}`}
                         title="WOS = stock on shelf (EOP) ÷ 8-week forward demand"
                       >{r.wos ?? "—"}</td>
                       <td
-                        className={`px-3 py-1.5 text-right ${wosColor(r.fwd_coverage_wks, null, r.lead_time_weeks ?? 12, r.target_wos)}`}
+                        className={`px-3 py-1.5 text-right ${wosColor(r.fwd_coverage_wks, r.lead_time_weeks ?? 12, r.target_wos, true)}`}
                         title={r.fwd_coverage_wks != null ? `Forward Coverage = WOS + your in-transit orders = ${r.fwd_coverage_wks.toFixed(1)} wks${r.first_stockout_week ? ` · ⚠ Stockout risk: Wk ${String(r.first_stockout_week).slice(-2)}` : ""}` : "No forward coverage (ongoing/actualised week)"}
                       >{r.fwd_coverage_wks != null ? r.fwd_coverage_wks.toFixed(1) : "—"}</td>
                       <td className="px-3 py-1.5 text-right text-violet-400">{fmtU(r.recomm_receipt_units)}</td>
@@ -1945,10 +1950,10 @@ export default function WPPage() {
                     {activeTab === "inventory" && <>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.bop_units)}</td>
                       <td className="px-3 py-1.5 text-right">{fmtU(r.eop_units)}</td>
-                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12, r.target_wos)}`}>
+                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.lead_time_weeks ?? 12, r.target_wos)}`}>
                         {r.wos ?? "—"}
                       </td>
-                      <td className={`px-3 py-1.5 text-right ${wosColor(r.wos, r.fwd_coverage_wks, r.lead_time_weeks ?? 12, r.target_wos)}`}
+                      <td className={`px-3 py-1.5 text-right ${wosColor(r.fwd_coverage_wks, r.lead_time_weeks ?? 12, r.target_wos, true)}`}
                           title="Forward Coverage = (EOP + OO pipeline next lead-time weeks) / 8wk avg">
                         {r.fwd_coverage_wks != null ? r.fwd_coverage_wks.toFixed(1) : "—"}
                       </td>

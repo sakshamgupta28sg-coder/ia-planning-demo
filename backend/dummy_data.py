@@ -179,6 +179,41 @@ def get_target_wos(hc: int, channel: str) -> int:
     return get_effective_metrics(hc)["target_wos"]
 
 
+def _weeks_of_cover(stock, idx: int, sales: list, fallback_rate: float) -> float:
+    """Forward weeks of demand `stock` covers, walking the REAL demand curve from
+    idx+1 (not a flat average). Seasonality-aware:
+
+      - Flat-demand region → reduces to stock / rate, i.e. identical to the old
+        8wk-avg result. So calm/tail rows do not move.
+      - Demand ramp (e.g. pre-peak) → the rising weeks consume `stock` faster, so
+        coverage does NOT inflate. This is what stops FC exploding to 100+ when a
+        peak-sized pipeline is measured against trough current demand.
+
+    Leftover stock that outlasts the remaining season is extrapolated at
+    `fallback_rate` (the 8wk forward avg at idx) so the end-of-season overstock
+    signal keeps its prior magnitude. Caller gates on fallback_rate>0, mirroring
+    the old `if wos_avg_s > 0 else None` so None-rows stay None.
+    """
+    if stock <= 0:
+        return 0.0
+    remaining = float(stock)
+    weeks = 0.0
+    n = len(sales)
+    for j in range(idx + 1, n):
+        d = sales[j]
+        if d <= 0:
+            weeks += 1.0                       # zero-demand week covered trivially
+            continue
+        if remaining >= d:
+            remaining -= d
+            weeks += 1.0
+        else:
+            return round(weeks + remaining / d, 2)
+    if remaining > 0 and fallback_rate > 0:    # outlasts season → extrapolate
+        weeks += remaining / fallback_rate
+    return round(weeks, 2)
+
+
 def _compute_recomm_receipt(hc: int, ch: str, wk: int, eop_units: int) -> int:
     """Rolling OTB Forward Coverage model.
 
@@ -1027,6 +1062,9 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
         lead_time_s   = m_s["lead_time_weeks"]
         look_ahead_s  = lead_time_s + m_s["safety_weeks"]
         target_wos_s  = get_target_wos(hc_s, ch_s)
+        # Forward demand curve for this stream — used by the coverage walk (WOS/FC)
+        # so coverage tracks real seasonality, not a flat 8wk average.
+        sales_s       = [x.get("written_sales_units", 0) for x in stream]
 
         for i, b in enumerate(stream):
             b["lead_time_weeks"] = lead_time_s   # expose on every row for frontend coloring
@@ -1105,8 +1143,10 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 b["fwd_coverage_wks"]   = None
                 b["first_stockout_week"] = None
             else:
-                # WOS = EOP / 8-week forward avg (current stock only)
-                b["wos"] = round(b["eop_units"] / wos_avg_s, 2) if wos_avg_s > 0 else None
+                # WOS = forward weeks of cover for current stock (EOP only), walked
+                # down the real demand curve. Gated on wos_avg_s>0 so terminal weeks
+                # with no forward demand stay None (unchanged from the 8wk-avg form).
+                b["wos"] = _weeks_of_cover(b["eop_units"], i, sales_s, wos_avg_s) if wos_avg_s > 0 else None
                 # FC + first_stockout_week computed in second pass below
                 # (needs full BOP chain propagated first so future eop_units are accurate)
                 b["fwd_coverage_wks"]   = None
@@ -1117,12 +1157,15 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
         #
         # Two SEPARATE concerns, deliberately not merged into one number:
         #
-        #   FC (display)  = (EOP + pipeline) / 8wk_avg
+        #   FC (display)  = weeks of cover for (EOP + pipeline), WALKED down the real
+        #     forward demand curve (see _weeks_of_cover), not divided by a flat 8wk
+        #     average. The flat-avg form exploded to 100+ in pre-peak weeks because a
+        #     peak-sized pipeline was measured against trough current demand; walking
+        #     the curve consumes that pipeline at its true (rising) rate instead.
         #     pipeline = the planner's ORDERS in transit (OOP placed but not yet
         #     received = OOP over the last LT weeks). Ingested supply is NOT added
         #     here — it already flows into EOP as it lands, so adding it would
-        #     double-count and inflate FC (the old Wk26=49.8 bug). At baseline
-        #     (no orders) FC == WOS.
+        #     double-count. At baseline (no orders) FC == WOS (same walk, same stock).
         #
         #   Stockout flags (classification) = walk the real EOP chain
         #     A back-loaded receipt (lands wk+14) leaves you dry wks 1-13 even though
@@ -1143,9 +1186,15 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                 for px in stream[lo : i + 1]
                 if not px.get("actualised") and not px.get("is_ongoing")
             )
-            b["fwd_coverage_wks"] = round(
-                (b["eop_units"] + pipeline) / wos_avg_s, 2
-            ) if wos_avg_s > 0 else None
+            # FC = forward weeks of cover for stock + in-transit pipeline, walked down
+            # the real demand curve (same method as WOS). Walking the curve is what
+            # keeps a peak-sized pipeline from reading as 100+ weeks against trough
+            # current demand: the ramp/peak consumes the pipeline at its true rate.
+            # Where pipeline==0 this is identical to WOS by construction (consistent).
+            b["fwd_coverage_wks"] = (
+                _weeks_of_cover(b["eop_units"] + pipeline, i, sales_s, wos_avg_s)
+                if wos_avg_s > 0 else None
+            )
 
             # Stockout WITHIN lead time = can't be fixed by reordering now (order
             # placed today lands in LT weeks, too late). Window [i .. i+LT] inclusive.
@@ -1234,6 +1283,21 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
             incoming = sum(sim_rcpt[t + 1 : t + 1 + buffer_w])
             raw = max(0, target - pos_t - incoming)
             recomm = int(_math.ceil(raw / cp_s) * cp_s) if (raw > 0 and cp_s > 0) else 0
+            # Spread cap — don't dump a whole buffer in one order. Long lead time + a
+            # demand ramp makes the first reorder land a full buffer of PEAK demand at
+            # once (e.g. Ankle Boots LT16: 324 units in wk21) → in-transit pipeline and
+            # held inventory both balloon. Cap each week at ~1.5× the avg demand of the
+            # arrival-coverage window so the catch-up STREAMS across consecutive weeks.
+            # The _rechain below leaves the uncovered remainder for the next week's order
+            # to pick up (and re-chaining lowers its projected EOP, so it fires) → peak
+            # inventory drops, arrivals stream in, no stockout. The 1.5× floor keeps the
+            # peak covered (tighter ratios starved it); floored at one case pack so a cap
+            # never blocks a needed buy. Bites ONLY when the natural order exceeds it —
+            # short-LT / flat-demand SKUs order under the cap and are untouched.
+            if recomm > 0 and cp_s > 0 and buffer_w > 0:
+                arr_avg = sum(sales[t : t + buffer_w]) / buffer_w
+                cap = max(cp_s, int(_math.ceil(1.5 * arr_avg / cp_s) * cp_s))
+                recomm = min(recomm, cap)
             b["recomm_receipt_units"] = recomm
             if recomm > 0:
                 sim_rcpt[t] += recomm
