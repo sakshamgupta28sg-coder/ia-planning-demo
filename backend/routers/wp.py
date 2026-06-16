@@ -9,7 +9,7 @@ from dummy_data import (
     get_target_wos, update_channel_target_wos, reset_channel_target_wos, _CHANNEL_TARGET_WOS,
     clear_single_override, accept_recomm_receipts, undo_recomm_receipts, shift_receipts,
     compare_snapshots, get_exceptions_panel,
-    get_budget, set_budget, get_audit_log, get_season_progress,
+    get_budget, get_audit_log, get_season_progress,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -519,10 +519,6 @@ def get_audit(limit: int = 100, hierarchy_code: Optional[int] = None, field: Opt
 
 
 # ── OTB Budget ────────────────────────────────────────────────────────────────
-class BudgetRequest(BaseModel):
-    budget: float = Field(ge=0)
-
-
 @router.get("/budget")
 def read_budget(
     hierarchy_codes: Optional[str] = None,
@@ -531,17 +527,6 @@ def read_budget(
     hc_list = [int(x) for x in hierarchy_codes.split(",") if x.strip()] if hierarchy_codes else None
     ch_list = [x.strip() for x in channels.split(",") if x.strip()] if channels else None
     return get_budget(hc_list, ch_list)
-
-
-@router.put("/budget")
-def write_budget(
-    body: BudgetRequest,
-    hierarchy_codes: Optional[str] = None,
-    channels: Optional[str] = None,
-):
-    hc_list = [int(x) for x in hierarchy_codes.split(",") if x.strip()] if hierarchy_codes else None
-    ch_list = [x.strip() for x in channels.split(",") if x.strip()] if channels else None
-    return set_budget(hc_list, ch_list, body.budget)
 
 
 # ── Snapshots ─────────────────────────────────────────────────────────────────

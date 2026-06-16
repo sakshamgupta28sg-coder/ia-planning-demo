@@ -6,7 +6,7 @@ import {
   topDownDistribute, undoTopDown, previewTopDown, fetchSKUSettings, updateSKUSetting, resetSKUSettings,
   fetchTargetWOS, updateTargetWOS, resetTargetWOS,
   undoRowOverride, acceptRecomm, undoRecomm, bulkShiftReceipts,
-  compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget, updateBudget,
+  compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget,
   fetchSeasonProgress, renameSnapshotAPI,
 } from "@/lib/api";
 import {
@@ -399,7 +399,6 @@ export default function WPPage() {
   const [showAuditLog, setShowAuditLog] = useState(false);
   // Budget
   const [budgetData, setBudgetData] = useState<BudgetData | null>(null);
-  const [budgetInput, setBudgetInput] = useState("");
   // Snapshot comparison
   const [compareIds, setCompareIds] = useState<number[]>([]);
   const [compareData, setCompareData] = useState<SnapCompare | null>(null);
@@ -837,22 +836,7 @@ export default function WPPage() {
     }
   }
 
-  async function handleBudgetSave() {
-    const v = parseFloat(budgetInput);
-    if (isNaN(v) || v < 0) return;
-    const params: Record<string, string> = {};
-    if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
-    if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
-    const data = await updateBudget(v, Object.keys(params).length ? params : undefined);
-    // Refresh both full and filtered budget
-    const [fullBud, filtBud] = await Promise.all([
-      fetchBudget(),
-      isFiltered ? fetchBudget(params) : Promise.resolve(null),
-    ]);
-    setBudgetData(fullBud);
-    if (isFiltered) setFilteredBudget(filtBud);
-    setBudgetInput("");
-  }
+
 
   async function toggleCompareSnap(id: number) {
     setCompareData(null);
@@ -1364,18 +1348,6 @@ export default function WPPage() {
                   })}
                 </div>
               )}
-              <div className="flex gap-1 mt-2">
-                <input
-                  value={budgetInput}
-                  onChange={(e) => setBudgetInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleBudgetSave()}
-                  placeholder={displayBudget?.budget ? fmtD(displayBudget.budget) : "Set budget…"}
-                  className="bg-slate-900 border border-slate-700 text-[10px] text-slate-300 rounded px-2 py-1 w-24 outline-none focus:border-blue-500"
-                />
-                <button onClick={handleBudgetSave} disabled={!budgetInput.trim()}
-                  className="text-[10px] bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-300 px-2 py-1 rounded transition-colors"
-                >Set</button>
-              </div>
             </div>
             );
           })()}

@@ -19,6 +19,34 @@ HIERARCHIES = [
 CATEGORIES = list(dict.fromkeys(h["l1_name"] for h in HIERARCHIES))
 
 CHANNELS = ["Ecom", "Indirect", "Store"]
+
+# Ingested receipt budget per (hierarchy_code, channel) — season OTB target
+BUDGET_DATA: Dict[tuple, float] = {
+    (10001, "Ecom"):     15000,
+    (10001, "Indirect"):  9000,
+    (10001, "Store"):     4000,
+    (10002, "Ecom"):     13000,
+    (10002, "Indirect"):  7000,
+    (10002, "Store"):     3500,
+    (10003, "Ecom"):     25000,
+    (10003, "Indirect"):  3500,
+    (10003, "Store"):     1200,
+    (10004, "Ecom"):      8500,
+    (10004, "Indirect"):  4500,
+    (10004, "Store"):     2000,
+    (10005, "Ecom"):     24000,
+    (10005, "Indirect"): 12000,
+    (10005, "Store"):     6500,
+    (10006, "Ecom"):      9000,
+    (10006, "Indirect"):  5500,
+    (10006, "Store"):     2500,
+    (10007, "Ecom"):      6500,
+    (10007, "Indirect"):  3500,
+    (10007, "Store"):     1800,
+    (10008, "Ecom"):      8000,
+    (10008, "Indirect"):  4000,
+    (10008, "Store"):     2500,
+}
 SUB_CHANNELS = {
     "Ecom": ["Ecom_Direct", "Ecom_Marketplace"],
     "Indirect": ["Indirect_National", "Indirect_Regional"],
@@ -624,7 +652,7 @@ from database import (
     db_get_all_new_skus, db_get_max_new_sku_hc, db_insert_new_sku, db_delete_new_sku,
     db_delete_override,
     db_log_audit, db_get_audit_log,
-    db_get_setting, db_set_setting, db_get_budget_overrides,
+    db_get_setting, db_set_setting,
 )
 
 init_db()  # create tables on first import; no-op if already exist
@@ -2091,10 +2119,7 @@ def get_exceptions_panel() -> List[Dict]:
 
 
 def get_budget(hc_list: List[int] = None, ch_list: List[str] = None) -> Dict:
-    """Return OTB receipt budget (per-SKU×channel), consumption, and category breakdown.
-    Budget is stored per (hc, channel); this aggregates matching combos."""
-    all_overrides = db_get_budget_overrides()  # key = '{hc}_{channel}'
-
+    """Return OTB receipt budget (ingested per SKU×channel), consumption, and category breakdown."""
     planned_cost = 0.0
     budget = 0.0
     category_costs: Dict[str, float] = {}
@@ -2108,10 +2133,10 @@ def get_budget(hc_list: List[int] = None, ch_list: List[str] = None) -> Dict:
         planned_cost += cost
         cat = r.get("l1_name", "Other")
         category_costs[cat] = category_costs.get(cat, 0.0) + cost
-        key = f"{r['hierarchy_code']}_{r['channel']}"
-        if key not in seen_combos:
-            seen_combos.add(key)
-            budget += all_overrides.get(key, 0.0)
+        combo = (r["hierarchy_code"], r["channel"])
+        if combo not in seen_combos:
+            seen_combos.add(combo)
+            budget += BUDGET_DATA.get(combo, 0.0)
 
     planned_cost = round(planned_cost, 2)
     budget = round(budget, 2)
@@ -2125,25 +2150,6 @@ def get_budget(hc_list: List[int] = None, ch_list: List[str] = None) -> Dict:
         "pct_consumed":       pct_consumed,
         "category_breakdown": category_breakdown,
     }
-
-
-def set_budget(hc_list: List[int], ch_list: List[str], value: float) -> Dict:
-    """Distribute value proportionally across matching (hc, channel) combos by planned receipt cost."""
-    rows = [
-        r for r in get_agg_rows()
-        if (hc_list is None or r["hierarchy_code"] in hc_list)
-        and (ch_list is None or r["channel"] in ch_list)
-    ]
-    combo_costs: Dict[str, float] = {}
-    for r in rows:
-        key = f"{r['hierarchy_code']}_{r['channel']}"
-        combo_costs[key] = combo_costs.get(key, 0.0) + r["total_receipt_units"] * r.get("written_auc", 0)
-
-    total_cost = sum(combo_costs.values())
-    for key, cost in combo_costs.items():
-        share = (cost / total_cost) if total_cost > 0 else (1.0 / len(combo_costs))
-        db_set_setting(f"budget_{key}", str(round(value * share, 2)))
-    return get_budget(hc_list, ch_list)
 
 
 def get_audit_log(limit: int = 100, hierarchy_code: int = None, field: str = None) -> List[Dict]:
