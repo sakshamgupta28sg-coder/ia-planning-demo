@@ -259,7 +259,7 @@ def get_sku_settings():
 
 class SKUSettingRequest(BaseModel):
     field: str
-    value: int = Field(ge=1)
+    value: int = Field(ge=0)
 
 
 @router.put("/sku-settings/{hierarchy_code}")
