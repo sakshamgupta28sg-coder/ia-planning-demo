@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import {
   fetchWPByWeek, fetchWPSummary, fetchWPFilters, fetchPortfolio,
   editWPRow, resetOverrides, fetchSnapshots, saveSnapshotAPI, restoreSnapshotAPI, deleteSnapshotAPI,
@@ -436,6 +436,23 @@ export default function WPPage() {
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
+
+  // Filtered summary derived from loaded rows — updates automatically with selection
+  const filteredSummary = useMemo(() => {
+    if (!canEdit || rows.length === 0) return null;
+    const total_u = rows.reduce((s, r) => s + r.written_sales_units, 0);
+    const total_d = rows.reduce((s, r) => s + r.written_sales_dollars, 0);
+    const total_g = rows.reduce((s, r) => s + r.written_gm_dollar, 0);
+    return {
+      total_written_sales_units: total_u,
+      total_written_sales_dollars: Math.round(total_d * 100) / 100,
+      total_written_gm_dollar: Math.round(total_g * 100) / 100,
+      avg_written_gm_perc: total_d > 0 ? Math.round(total_g / total_d * 10000) / 10000 : 0,
+    };
+  }, [canEdit, rows]);
+
+  const displaySummary = canEdit ? filteredSummary : currentSummary;
+  const isFiltered = canEdit;
 
   function showToast(message: string, type: "success" | "error" = "success") {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -1195,24 +1212,31 @@ export default function WPPage() {
       </div>
 
       {/* ── Portfolio KPI cards ── */}
-      {currentSummary && (
+      {(displaySummary || currentSummary) && (() => {
+        const s = displaySummary ?? currentSummary!;
+        return (
         <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+          {isFiltered && (
+            <div className="col-span-full text-[10px] text-blue-400 -mb-1">
+              Showing selection: {displayHcLabel} · {displayChLabel}
+            </div>
+          )}
           {[
             {
-              label: "Portfolio Sales $", val: fmtD(currentSummary.total_written_sales_dollars),
-              delta: baselineSummary ? <Delta current={currentSummary.total_written_sales_dollars} baseline={baselineSummary.total_written_sales_dollars} isDollar /> : null,
+              label: isFiltered ? "Selection Sales $" : "Portfolio Sales $", val: fmtD(s.total_written_sales_dollars),
+              delta: !isFiltered && baselineSummary ? <Delta current={s.total_written_sales_dollars} baseline={baselineSummary.total_written_sales_dollars} isDollar /> : null,
             },
             {
-              label: "Portfolio GM $", val: fmtD(currentSummary.total_written_gm_dollar),
-              delta: baselineSummary ? <Delta current={currentSummary.total_written_gm_dollar} baseline={baselineSummary.total_written_gm_dollar} isDollar /> : null,
+              label: isFiltered ? "Selection GM $" : "Portfolio GM $", val: fmtD(s.total_written_gm_dollar),
+              delta: !isFiltered && baselineSummary ? <Delta current={s.total_written_gm_dollar} baseline={baselineSummary.total_written_gm_dollar} isDollar /> : null,
             },
             {
-              label: "GM %", val: pct(currentSummary.avg_written_gm_perc),
-              delta: baselineSummary ? <Delta current={currentSummary.avg_written_gm_perc * 100} baseline={baselineSummary.avg_written_gm_perc * 100} /> : null,
+              label: "GM %", val: pct(s.avg_written_gm_perc),
+              delta: !isFiltered && baselineSummary ? <Delta current={s.avg_written_gm_perc * 100} baseline={baselineSummary.avg_written_gm_perc * 100} /> : null,
             },
             {
-              label: "Portfolio Units", val: fmtU(currentSummary.total_written_sales_units),
-              delta: baselineSummary ? <Delta current={currentSummary.total_written_sales_units} baseline={baselineSummary.total_written_sales_units} /> : null,
+              label: isFiltered ? "Selection Units" : "Portfolio Units", val: fmtU(s.total_written_sales_units),
+              delta: !isFiltered && baselineSummary ? <Delta current={s.total_written_sales_units} baseline={baselineSummary.total_written_sales_units} /> : null,
             },
           ].map((k) => (
             <div key={k.label} className={`rounded-lg p-4 border ${hasEdits ? "bg-slate-800 border-amber-900/50" : "bg-slate-800 border-slate-700"}`}>
@@ -1311,7 +1335,8 @@ export default function WPPage() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Exception Alert Panel ── */}
       {exceptions.length > 0 && (
