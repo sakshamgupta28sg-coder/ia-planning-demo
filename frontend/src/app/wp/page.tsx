@@ -434,9 +434,17 @@ export default function WPPage() {
   const [auditHcFilter, setAuditHcFilter] = useState<string>("");
   const [auditFieldFilter, setAuditFieldFilter] = useState<string>("");
 
+  // When a category is selected but no specific products, treat all hcs in that category as the filter
+  const effectiveHcs = selectedHcs.length > 0
+    ? selectedHcs
+    : selectedCategory
+      ? filters.hierarchies.filter((h) => h.l1_name === selectedCategory).map((h) => String(h.hierarchy_code))
+      : [];
+  const effectiveHcsKey = [...effectiveHcs].sort().join(",");
+
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
-  const isFiltered = selectedHcs.length > 0 || selectedChannels.length > 0;
+  const isFiltered = effectiveHcs.length > 0 || selectedChannels.length > 0;
 
   const [filteredSummary, setFilteredSummary] = useState<Summary | null>(null);
   const [filteredBudget, setFilteredBudget] = useState<BudgetData | null>(null);
@@ -481,14 +489,14 @@ export default function WPPage() {
     // Re-fetch filtered cards too so edits reflect in the filtered view
     if (isFiltered) {
       const params: Record<string, string> = {};
-      if (selectedHcs.length > 0) params.hierarchy_codes = selectedHcs.join(",");
+      if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
       if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
       const [fs, fb] = await Promise.all([fetchWPSummary(params), fetchBudget(params)]);
       setFilteredSummary(fs && Object.keys(fs).length ? fs : null);
       setFilteredBudget(fb);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFiltered, hcsKey, chsKey]);
+  }, [isFiltered, effectiveHcsKey, chsKey]);
 
   // Reload filtered KPI cards whenever selection changes
   const reloadFilteredCards = useCallback(async () => {
@@ -498,13 +506,13 @@ export default function WPPage() {
       return;
     }
     const params: Record<string, string> = {};
-    if (selectedHcs.length > 0) params.hierarchy_codes = selectedHcs.join(",");
+    if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
     if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
     const [s, bud] = await Promise.all([fetchWPSummary(params), fetchBudget(params)]);
     setFilteredSummary(s && Object.keys(s).length ? s : null);
     setFilteredBudget(bud);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFiltered, hcsKey, chsKey]);
+  }, [isFiltered, effectiveHcsKey, chsKey]);
 
   const reloadRows = useCallback(async () => {
     if (!canEdit) { setRows([]); return; }
@@ -983,7 +991,8 @@ export default function WPPage() {
     categoryHierarchies.length > 0 &&
     categoryHierarchies.every((h) => selectedHcs.includes(String(h.hierarchy_code)));
   const displayHcLabel =
-    selectedHcs.length === 0 ? "No product" :
+    selectedHcs.length === 0 && !selectedCategory ? "No product" :
+    selectedHcs.length === 0 ? `${selectedCategory} (all)` :
     allCategoryHcsSelected ? `${selectedCategory} (all)` :
     selectedHcs.length === 1 ? (selectedProduct ? `${selectedProduct.sku_code} · ${selectedProduct.l2_name}` : selectedHcs[0]) :
     `${selectedHcs.length} Products`;
