@@ -840,8 +840,17 @@ export default function WPPage() {
   async function handleBudgetSave() {
     const v = parseFloat(budgetInput);
     if (isNaN(v) || v < 0) return;
-    const data = await updateBudget(v);
-    setBudgetData(data);
+    const params: Record<string, string> = {};
+    if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
+    if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
+    const data = await updateBudget(v, Object.keys(params).length ? params : undefined);
+    // Refresh both full and filtered budget
+    const [fullBud, filtBud] = await Promise.all([
+      fetchBudget(),
+      isFiltered ? fetchBudget(params) : Promise.resolve(null),
+    ]);
+    setBudgetData(fullBud);
+    if (isFiltered) setFilteredBudget(filtBud);
     setBudgetInput("");
   }
 
@@ -1360,7 +1369,7 @@ export default function WPPage() {
                   value={budgetInput}
                   onChange={(e) => setBudgetInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleBudgetSave()}
-                  placeholder={budgetData?.budget ? fmtD(budgetData.budget) : "Set budget…"}
+                  placeholder={displayBudget?.budget ? fmtD(displayBudget.budget) : "Set budget…"}
                   className="bg-slate-900 border border-slate-700 text-[10px] text-slate-300 rounded px-2 py-1 w-24 outline-none focus:border-blue-500"
                 />
                 <button onClick={handleBudgetSave} disabled={!budgetInput.trim()}

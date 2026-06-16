@@ -534,8 +534,14 @@ def read_budget(
 
 
 @router.put("/budget")
-def write_budget(body: BudgetRequest):
-    return set_budget(body.budget)
+def write_budget(
+    body: BudgetRequest,
+    hierarchy_codes: Optional[str] = None,
+    channels: Optional[str] = None,
+):
+    hc_list = [int(x) for x in hierarchy_codes.split(",") if x.strip()] if hierarchy_codes else None
+    ch_list = [x.strip() for x in channels.split(",") if x.strip()] if channels else None
+    return set_budget(hc_list, ch_list, body.budget)
 
 
 # ── Snapshots ─────────────────────────────────────────────────────────────────

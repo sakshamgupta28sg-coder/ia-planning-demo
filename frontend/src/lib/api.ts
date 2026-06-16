@@ -238,8 +238,9 @@ export async function fetchBudget(params?: Record<string, string>) {
   return res.json();
 }
 
-export async function updateBudget(budget: number) {
-  const res = await fetch(`${BASE}/wp/budget`, {
+export async function updateBudget(budget: number, params?: Record<string, string>) {
+  const qs = params && Object.keys(params).length ? "?" + new URLSearchParams(params).toString() : "";
+  const res = await fetch(`${BASE}/wp/budget${qs}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ budget }),

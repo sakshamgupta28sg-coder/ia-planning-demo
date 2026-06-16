@@ -351,6 +351,13 @@ def db_set_setting(key: str, value: str) -> None:
         conn.commit()
 
 
+def db_get_budget_overrides() -> Dict[str, float]:
+    """Return all per-(hc,channel) budget overrides as {'{hc}_{channel}': amount}."""
+    with _conn() as conn:
+        rows = conn.execute("SELECT key, value FROM settings WHERE key LIKE 'budget_%'").fetchall()
+    return {r["key"][len("budget_"):]: float(r["value"]) for r in rows}
+
+
 def db_delete_new_sku(hierarchy_code: int) -> bool:
     """Delete a new SKU by hierarchy_code. Returns True if a row was deleted."""
     with _conn() as conn:
