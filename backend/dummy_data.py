@@ -1998,16 +1998,24 @@ def get_exceptions_panel() -> List[Dict]:
         key = (hc, ch)
         m   = get_effective_metrics(hc)
         lt  = m["lead_time_weeks"]
-        cov = r.get("fwd_coverage_wks") if r.get("fwd_coverage_wks") is not None else r.get("wos")
+        tw  = get_target_wos(hc, ch)
+        fc  = r.get("fwd_coverage_wks")
+        cov = fc if fc is not None else r.get("wos")
         if cov is None:
             continue
+
+        # Excess line must MATCH the cell-coloring rule, else the panel and the
+        # grid disagree (panel false-flagged Hoodies as excess at FC≈13 while the
+        # grid showed it green). FC carries the in-transit pipeline → excess only
+        # above lead_time + target_wos. WOS (on-hand only) → target_wos × 1.5.
+        excess_line = (lt + tw) if fc is not None else (tw * 1.5)
 
         # Track actual EOP=0 weeks (real stockout, not observation)
         if r.get("_stockout"):
             actual_stockout_wks.setdefault(key, []).append(r["current_week"])
 
         # Track actual excess weeks
-        if cov > get_target_wos(hc, ch) * 1.5:
+        if cov > excess_line:
             actual_excess_wks.setdefault(key, []).append(r["current_week"])
 
         order_gap = max(0, r.get("recomm_receipt_units", 0) - r.get("on_order_placed_total_unit", 0))
@@ -2018,7 +2026,7 @@ def get_exceptions_panel() -> List[Dict]:
             status = "critical"
         elif first_so is not None and order_gap > 0:
             status = "low"
-        elif cov > get_target_wos(hc, ch) * 1.5:
+        elif cov > excess_line:
             status = "excess"
         else:
             continue
