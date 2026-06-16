@@ -1734,6 +1734,96 @@ def accept_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
     return count
 
 
+def undo_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
+    """Inverse of accept_recomm_receipts: clear OO Placed on planning weeks.
+
+    Removes the `on_order_placed_total_unit` override from every unlocked,
+    non-actualised planning week of the given SKUs×channels, returning OO Placed
+    to baseline (ingested-only) so the recomm reappears. Other overrides on the
+    same week (e.g. written sales) are preserved — only the OO field is dropped.
+    Returns count of weeks cleared.
+    """
+    overrides = db_get_overrides()
+    touched = False
+    count = 0
+    for hc in hcs:
+        for ch in channels:
+            # Planning weeks where the planner could have placed an order.
+            planning_wks = {
+                r["current_week"]
+                for r in get_agg_rows(hc, ch)
+                if not r.get("actualised")
+                and not r.get("is_ongoing")
+                and not r.get("oo_locked")
+            }
+            for wk in planning_wks:
+                key = _ovr_key(hc, wk, ch)
+                entry = overrides.get(key)
+                if not entry or "on_order_placed_total_unit" not in entry:
+                    continue
+                rest = {
+                    k: v for k, v in entry.items()
+                    if k not in ("on_order_placed_total_unit", "_last_edited")
+                }
+                if rest:
+                    rest["_last_edited"] = "on_order_placed_total_unit"
+                    db_upsert_override(key, rest)
+                else:
+                    db_delete_override(key)
+                count += 1
+                touched = True
+    if touched:
+        _rebuild_pipeline_and_recomm(hcs, channels)
+    return count
+
+
+def undo_top_down(hcs: List[int], channels: List[str]) -> int:
+    """Inverse of apply_top_down: clear the written-sales split on planning weeks.
+
+    Removes BOTH `written_sales_units` and `written_sales_dollars` overrides from
+    every non-actualised, non-ongoing planning week of the given SKUs×channels,
+    returning sales to baseline. Both fields are cleared (not just the one the
+    split wrote) because they're price-linked — leaving one would desync the cell.
+    OO Placed and disc% overrides on the same week are preserved.
+    Returns count of weeks cleared.
+    """
+    sales_fields = ("written_sales_units", "written_sales_dollars")
+    overrides = db_get_overrides()
+    touched = False
+    count = 0
+    for hc in hcs:
+        for ch in channels:
+            planning_wks = {
+                r["current_week"]
+                for r in get_agg_rows(hc, ch)
+                if not r.get("actualised") and not r.get("is_ongoing")
+            }
+            for wk in planning_wks:
+                key = _ovr_key(hc, wk, ch)
+                entry = overrides.get(key)
+                if not entry or not any(f in entry for f in sales_fields):
+                    continue
+                rest = {
+                    k: v for k, v in entry.items()
+                    if k not in sales_fields and k not in ("_last_edited", "_edit_mode")
+                }
+                if rest:
+                    # Re-anchor _last_edited to a surviving editable field so _recalc
+                    # cascades off the right trigger.
+                    if "on_order_placed_total_unit" in rest:
+                        rest["_last_edited"] = "on_order_placed_total_unit"
+                    elif "written_dr_perc" in rest:
+                        rest["_last_edited"] = "written_dr_perc"
+                    db_upsert_override(key, rest)
+                else:
+                    db_delete_override(key)
+                count += 1
+                touched = True
+    if touched:
+        _rebuild_fwd_demand_and_recomm(hcs, channels)
+    return count
+
+
 def preview_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> Dict:
     """Dry-run of apply_top_down — same weight logic, no DB writes.
 

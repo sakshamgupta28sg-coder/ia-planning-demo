@@ -3,9 +3,9 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import {
   fetchWPByWeek, fetchWPSummary, fetchWPFilters, fetchPortfolio,
   editWPRow, resetOverrides, fetchSnapshots, saveSnapshotAPI, restoreSnapshotAPI, deleteSnapshotAPI,
-  topDownDistribute, previewTopDown, fetchSKUSettings, updateSKUSetting, resetSKUSettings,
+  topDownDistribute, undoTopDown, previewTopDown, fetchSKUSettings, updateSKUSetting, resetSKUSettings,
   fetchTargetWOS, updateTargetWOS, resetTargetWOS,
-  undoRowOverride, acceptRecomm, bulkShiftReceipts,
+  undoRowOverride, acceptRecomm, undoRecomm, bulkShiftReceipts,
   compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget, updateBudget,
   fetchSeasonProgress, renameSnapshotAPI,
 } from "@/lib/api";
@@ -705,6 +705,26 @@ export default function WPPage() {
     }
   }
 
+  async function handleUndoTopDown() {
+    if (!canEdit) return;
+    setTopDownLoading(true);
+    setTopDownPreview(null);
+    setEditError("");
+    try {
+      await undoTopDown({
+        hierarchy_codes: selectedHcs.map(Number),
+        channels: selectedChannels,
+      });
+      await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
+      setTopDownTarget("");
+      setWeekValueOverrides({});
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Undo split failed");
+    } finally {
+      setTopDownLoading(false);
+    }
+  }
+
   async function handleBulkShift(dir: 1 | -1) {
     const n = parseInt(shiftWeeks, 10);
     if (isNaN(n) || n <= 0 || !canEdit) return;
@@ -788,6 +808,23 @@ export default function WPPage() {
       await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : "Accept recomm failed");
+    } finally {
+      setAcceptRecommLoading(false);
+    }
+  }
+
+  async function handleUndoRecomm() {
+    if (!canEdit) return;
+    setAcceptRecommLoading(true);
+    setEditError("");
+    try {
+      await undoRecomm({
+        hierarchy_codes: selectedHcs.map(Number),
+        channels: selectedChannels,
+      });
+      await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : "Undo recomm failed");
     } finally {
       setAcceptRecommLoading(false);
     }
@@ -1619,11 +1656,19 @@ export default function WPPage() {
             <button onClick={handleTopDownPreview} disabled={!topDownTarget.trim() || topDownLoading}
               className="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white px-3 py-1 rounded border border-slate-500 transition-colors"
             >{topDownLoading ? "Loading…" : "Preview"}</button>
+            <button onClick={handleUndoTopDown} disabled={topDownLoading || !canEdit}
+              className="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 px-3 py-1 rounded border border-slate-500 transition-colors"
+              title="Clear the sales split (units + dollars) on all planning weeks — reverts top-down to baseline"
+            >↩ Undo Split</button>
             <span className="text-slate-600 text-[10px]">then confirm →</span>
             <button onClick={handleAcceptRecomm} disabled={acceptRecommLoading || !canEdit}
               className="text-xs bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors ml-2"
               title="Set OO Placed = Recomm Receipt for all planning weeks"
             >{acceptRecommLoading ? "Applying…" : "✓ Accept Recomm"}</button>
+            <button onClick={handleUndoRecomm} disabled={acceptRecommLoading || !canEdit}
+              className="text-xs bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 px-3 py-1 rounded border border-slate-500 transition-colors"
+              title="Clear OO Placed on all planning weeks — reverts the accept, recomm reappears"
+            >↩ Undo Accept</button>
           </div>
         )}
         {/* Top-down preview confirmation panel */}

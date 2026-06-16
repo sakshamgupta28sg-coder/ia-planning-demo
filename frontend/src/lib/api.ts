@@ -166,6 +166,16 @@ export async function topDownDistribute(body: {
   return res.json();
 }
 
+export async function undoTopDown(body: { hierarchy_codes: number[]; channels: string[] }) {
+  const res = await fetch(`${BASE}/wp/top-down/undo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function bulkShiftReceipts(body: {
   hierarchy_codes: number[];
   channels: string[];
@@ -239,6 +249,16 @@ export async function updateBudget(budget: number) {
 
 export async function acceptRecomm(body: { hierarchy_codes: number[]; channels: string[] }) {
   const res = await fetch(`${BASE}/wp/accept-recomm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function undoRecomm(body: { hierarchy_codes: number[]; channels: string[] }) {
+  const res = await fetch(`${BASE}/wp/undo-recomm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

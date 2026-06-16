@@ -4,10 +4,10 @@ from typing import Optional
 from dummy_data import (
     WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, CURRENT_WEEK, CATEGORIES,
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
-    rename_snapshot, get_all_snapshots, apply_top_down, preview_top_down,
+    rename_snapshot, get_all_snapshots, apply_top_down, undo_top_down, preview_top_down,
     get_effective_metrics, update_sku_setting, reset_sku_settings, EDITABLE_SKU_FIELDS,
     get_target_wos, update_channel_target_wos, reset_channel_target_wos, _CHANNEL_TARGET_WOS,
-    clear_single_override, accept_recomm_receipts, shift_receipts,
+    clear_single_override, accept_recomm_receipts, undo_recomm_receipts, shift_receipts,
     compare_snapshots, get_exceptions_panel,
     get_budget, set_budget, get_audit_log, get_season_progress,
 )
@@ -422,6 +422,21 @@ def top_down_distribute(body: TopDownRequest):
     return {"applied": count, "current_week": CURRENT_WEEK}
 
 
+class HcChannelRequest(BaseModel):
+    hierarchy_codes: list
+    channels: list
+
+
+@router.post("/top-down/undo")
+def top_down_undo(body: HcChannelRequest):
+    """Inverse of top-down: clear written-sales split (units + dollars) on planning weeks."""
+    count = undo_top_down(
+        [int(hc) for hc in body.hierarchy_codes],
+        list(body.channels),
+    )
+    return {"cleared": count}
+
+
 # ── Bulk receipt shift ────────────────────────────────────────────────────────
 class BulkShiftRequest(BaseModel):
     hierarchy_codes: list
@@ -456,6 +471,16 @@ def accept_recomm(body: AcceptRecommRequest):
         list(body.channels),
     )
     return {"applied": count}
+
+
+@router.post("/undo-recomm")
+def undo_recomm(body: AcceptRecommRequest):
+    """Inverse of accept-recomm: clear OO Placed on planning weeks → recomm reappears."""
+    count = undo_recomm_receipts(
+        [int(hc) for hc in body.hierarchy_codes],
+        list(body.channels),
+    )
+    return {"cleared": count}
 
 
 # ── Exception panel ───────────────────────────────────────────────────────────
