@@ -553,9 +553,11 @@ def snapshot_compare(a: int, b: int):
 
 
 @router.get("/season-progress")
-def season_progress():
+def season_progress(hierarchy_codes: Optional[str] = None, channels: Optional[str] = None):
     """Actualized-to-date vs full-year plan — season pace KPI."""
-    return get_season_progress()
+    hc_list = [int(x) for x in hierarchy_codes.split(",") if x.strip()] if hierarchy_codes else None
+    ch_list = [x.strip() for x in channels.split(",") if x.strip()] if channels else None
+    return get_season_progress(hc_list, ch_list)
 
 
 @router.get("/snapshots")

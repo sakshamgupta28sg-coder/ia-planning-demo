@@ -448,9 +448,11 @@ export default function WPPage() {
 
   const [filteredSummary, setFilteredSummary] = useState<Summary | null>(null);
   const [filteredBudget, setFilteredBudget] = useState<BudgetData | null>(null);
+  const [filteredSeasonProgress, setFilteredSeasonProgress] = useState<SeasonProgress | null>(null);
 
-  const displaySummary = isFiltered ? filteredSummary : currentSummary;
-  const displayBudget  = isFiltered ? filteredBudget  : budgetData;
+  const displaySummary        = isFiltered ? filteredSummary        : currentSummary;
+  const displayBudget         = isFiltered ? filteredBudget         : budgetData;
+  const displaySeasonProgress = isFiltered ? filteredSeasonProgress : seasonProgress;
 
   function showToast(message: string, type: "success" | "error" = "success") {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -491,9 +493,10 @@ export default function WPPage() {
       const params: Record<string, string> = {};
       if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
       if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
-      const [fs, fb] = await Promise.all([fetchWPSummary(params), fetchBudget(params)]);
+      const [fs, fb, fsp] = await Promise.all([fetchWPSummary(params), fetchBudget(params), fetchSeasonProgress(params)]);
       setFilteredSummary(fs && Object.keys(fs).length ? fs : null);
       setFilteredBudget(fb);
+      setFilteredSeasonProgress(fsp);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFiltered, effectiveHcsKey, chsKey]);
@@ -503,14 +506,16 @@ export default function WPPage() {
     if (!isFiltered) {
       setFilteredSummary(null);
       setFilteredBudget(null);
+      setFilteredSeasonProgress(null);
       return;
     }
     const params: Record<string, string> = {};
     if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
     if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
-    const [s, bud] = await Promise.all([fetchWPSummary(params), fetchBudget(params)]);
+    const [s, bud, fsp] = await Promise.all([fetchWPSummary(params), fetchBudget(params), fetchSeasonProgress(params)]);
     setFilteredSummary(s && Object.keys(s).length ? s : null);
     setFilteredBudget(bud);
+    setFilteredSeasonProgress(fsp);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFiltered, effectiveHcsKey, chsKey]);
 
@@ -1272,24 +1277,24 @@ export default function WPPage() {
             </div>
           ))}
           {/* Season Progress card */}
-          {seasonProgress && (() => {
-            const runRate = seasonProgress.weeks_actualized > 0
-              ? seasonProgress.actualized_dollars / seasonProgress.weeks_actualized : 0;
-            const projectedFY = seasonProgress.actualized_dollars + runRate * seasonProgress.weeks_remaining;
-            const projVsPlan = seasonProgress.plan_dollars > 0 ? projectedFY / seasonProgress.plan_dollars : 0;
+          {(displaySeasonProgress ?? seasonProgress) && (() => {
+            const sp = displaySeasonProgress ?? seasonProgress!;
+            const runRate = sp.weeks_actualized > 0 ? sp.actualized_dollars / sp.weeks_actualized : 0;
+            const projectedFY = sp.actualized_dollars + runRate * sp.weeks_remaining;
+            const projVsPlan = sp.plan_dollars > 0 ? projectedFY / sp.plan_dollars : 0;
             const onPaceColor = projVsPlan >= 0.95 ? "text-emerald-400" : projVsPlan >= 0.85 ? "text-amber-400" : "text-red-400";
             return (
               <div className="rounded-lg p-4 border bg-slate-800 border-slate-700">
                 <div className="text-xs text-slate-400 mb-1">Season Pace</div>
-                <div className="text-xl font-bold text-white">{pct(seasonProgress.pct_dollars)}</div>
+                <div className="text-xl font-bold text-white">{pct(sp.pct_dollars)}</div>
                 <div className="text-[10px] mt-1 text-slate-400">
-                  {fmtD(seasonProgress.actualized_dollars)} actualized
-                  <span className="text-slate-600"> of {fmtD(seasonProgress.plan_dollars)}</span>
+                  {fmtD(sp.actualized_dollars)} actualized
+                  <span className="text-slate-600"> of {fmtD(sp.plan_dollars)}</span>
                 </div>
                 <div className="mt-1.5 h-1.5 bg-slate-700 rounded-full overflow-hidden">
                   <div
-                    className={`h-full rounded-full ${seasonProgress.pct_dollars > 0.8 ? "bg-emerald-500" : seasonProgress.pct_dollars > 0.5 ? "bg-blue-500" : "bg-slate-500"}`}
-                    style={{ width: `${Math.min(seasonProgress.pct_dollars * 100, 100)}%` }}
+                    className={`h-full rounded-full ${sp.pct_dollars > 0.8 ? "bg-emerald-500" : sp.pct_dollars > 0.5 ? "bg-blue-500" : "bg-slate-500"}`}
+                    style={{ width: `${Math.min(sp.pct_dollars * 100, 100)}%` }}
                   />
                 </div>
                 <div className={`text-[10px] mt-1 font-medium ${onPaceColor}`} title="Projected full-year based on current run rate">

@@ -2130,9 +2130,13 @@ def get_audit_log(limit: int = 100, hierarchy_code: int = None, field: str = Non
     return db_get_audit_log(limit, hierarchy_code=hierarchy_code, field=field)
 
 
-def get_season_progress() -> Dict:
+def get_season_progress(hc_list: List[int] = None, ch_list: List[str] = None) -> Dict:
     """Actualized-to-date vs full-year plan — season pace tracking."""
     all_rows = get_agg_rows()
+    if hc_list is not None:
+        all_rows = [r for r in all_rows if r["hierarchy_code"] in hc_list]
+    if ch_list is not None:
+        all_rows = [r for r in all_rows if r["channel"] in ch_list]
     plan_u = sum(r["written_sales_units"] for r in all_rows)
     plan_d = round(sum(r["written_sales_dollars"] for r in all_rows), 2)
     act_u  = sum(r.get("actual_sales_units", 0) for r in all_rows if r.get("actualised"))

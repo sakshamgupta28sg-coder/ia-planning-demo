@@ -268,8 +268,9 @@ export async function undoRecomm(body: { hierarchy_codes: number[]; channels: st
   return res.json();
 }
 
-export async function fetchSeasonProgress() {
-  const res = await fetch(`${BASE}/wp/season-progress`, { cache: "no-store" });
+export async function fetchSeasonProgress(params?: Record<string, string>) {
+  const qs = params && Object.keys(params).length ? "?" + new URLSearchParams(params).toString() : "";
+  const res = await fetch(`${BASE}/wp/season-progress${qs}`, { cache: "no-store" });
   return res.json();
 }
 
