@@ -407,6 +407,8 @@ export default function WPPage() {
   const [skuSettings, setSkuSettings] = useState<Record<number, SKUSetting>>({});
   const [discPctMode, setDiscPctMode] = useState<"hold_units" | "hold_dollars">("hold_units");
   const [chartCombo, setChartCombo] = useState<string>("");
+  // Weekly-detail focus: "" = show all selected combos; else "{hc}_{channel}"
+  const [detailCombo, setDetailCombo] = useState<string>("");
   // target WOS keyed by "{hc}_{channel}"
   const [targetWOS, setTargetWOS] = useState<Record<string, number>>({});
   // tracks which hc_channel combos have an active channel-level override
@@ -454,6 +456,9 @@ export default function WPPage() {
     if (planningOnly && r.actualised) return false;
     if (weekFrom !== null && r.current_week < weekFrom) return false;
     if (weekTo   !== null && r.current_week > weekTo)   return false;
+    // Focus filter: when multiple combos are selected, optionally show just one.
+    // View-only — edits/accept/top-down still target the full selection.
+    if (detailCombo && `${r.hierarchy_code}_${r.channel}` !== detailCombo) return false;
     return true;
   });
 
@@ -514,6 +519,16 @@ export default function WPPage() {
       // Keep existing selection if still valid
       const valid = rows.some((r) => `${r.hierarchy_code}_${r.channel}` === prev);
       return valid ? prev : key;
+    });
+  }, [rows]);
+
+  // Keep the weekly-detail focus valid; drop it back to "all" if the combo vanished
+  // (selection changed). "" always means "show all selected combos".
+  useEffect(() => {
+    setDetailCombo((prev) => {
+      if (!prev) return prev;
+      const valid = rows.some((r) => `${r.hierarchy_code}_${r.channel}` === prev);
+      return valid ? prev : "";
     });
   }, [rows]);
 
@@ -655,14 +670,26 @@ export default function WPPage() {
     }
   }
 
+  // Toolbar bulk actions (Accept, Undo, Top-down, Shift) act on the focused combo
+  // when one is selected in the weekly-detail dropdown; otherwise the full selection.
+  // WYSIWYG: what the grid shows is what the action writes.
+  function bulkTarget(): { hierarchy_codes: number[]; channels: string[] } {
+    if (detailCombo) {
+      const idx = detailCombo.indexOf("_");
+      const hc = detailCombo.slice(0, idx);
+      const ch = detailCombo.slice(idx + 1);
+      return { hierarchy_codes: [Number(hc)], channels: [ch] };
+    }
+    return { hierarchy_codes: selectedHcs.map(Number), channels: selectedChannels };
+  }
+
   async function handleTopDownPreview() {
     const target = parseFloat(topDownTarget);
     if (isNaN(target) || target <= 0) return;
     setTopDownLoading(true);
     try {
       const preview = await previewTopDown({
-        hierarchy_codes: selectedHcs.map(Number),
-        channels: selectedChannels,
+        ...bulkTarget(),
         target,
         field: topDownField,
       });
@@ -689,8 +716,7 @@ export default function WPPage() {
           })
         : undefined;
       await topDownDistribute({
-        hierarchy_codes: selectedHcs.map(Number),
-        channels: selectedChannels,
+        ...bulkTarget(),
         target,
         field: topDownField,
         week_values,
@@ -712,8 +738,7 @@ export default function WPPage() {
     setEditError("");
     try {
       await undoTopDown({
-        hierarchy_codes: selectedHcs.map(Number),
-        channels: selectedChannels,
+        ...bulkTarget(),
       });
       await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
       setTopDownTarget("");
@@ -733,8 +758,7 @@ export default function WPPage() {
     setEditError("");
     try {
       const result = await bulkShiftReceipts({
-        hierarchy_codes: selectedHcs.map(Number),
-        channels: selectedChannels,
+        ...bulkTarget(),
         shift_weeks: shift,
       });
       await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
@@ -802,8 +826,7 @@ export default function WPPage() {
     setEditError("");
     try {
       await acceptRecomm({
-        hierarchy_codes: selectedHcs.map(Number),
-        channels: selectedChannels,
+        ...bulkTarget(),
       });
       await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
     } catch (e: unknown) {
@@ -819,8 +842,7 @@ export default function WPPage() {
     setEditError("");
     try {
       await undoRecomm({
-        hierarchy_codes: selectedHcs.map(Number),
-        channels: selectedChannels,
+        ...bulkTarget(),
       });
       await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
     } catch (e: unknown) {
@@ -1584,6 +1606,20 @@ export default function WPPage() {
           <h2 className="text-sm font-semibold text-slate-300">
             {canEdit ? `${displayHcLabel} · ${displayChLabel}` : "Weekly Detail"}
           </h2>
+          {/* Focus the grid on one SKU×channel when several are selected (view-only) */}
+          {canEdit && chartCombos.length > 1 && (
+            <select
+              value={detailCombo}
+              onChange={(e) => setDetailCombo(e.target.value)}
+              title="Focus the weekly grid on one SKU × channel. Edits, Accept and Top-down still apply to the full selection."
+              className="bg-slate-700 border border-slate-600 text-xs text-slate-200 rounded px-2 py-1 outline-none focus:border-blue-500 cursor-pointer"
+            >
+              <option value="">All {chartCombos.length} combos</option>
+              {chartCombos.map((c) => (
+                <option key={c.key} value={c.key}>{c.label}</option>
+              ))}
+            </select>
+          )}
           {canEdit && (
             <span className="text-xs text-blue-400 bg-blue-900/30 px-2 py-0.5 rounded">
               ✎ blue cells are editable
