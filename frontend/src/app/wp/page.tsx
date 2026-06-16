@@ -1441,7 +1441,7 @@ export default function WPPage() {
         <table className="w-full text-xs text-slate-300">
           <thead>
             <tr className="border-b border-slate-700 text-slate-400">
-              {["", "SKU", "Product", "Sales Units", "Sales $", "GM $", "GM %", "Lead Time ✎", "Case Pack ✎", "Safety Wks ✎", "Target WOS ✎", "Health"].map((h) => (
+              {["", "SKU", "Product", "Sales Units", "Sales $", "GM $", "GM %", "Lead Time ✎", "Case Pack ✎", "Safety Wks ✎", "Target WOS ✎"].map((h) => (
                 <th key={h} className={`px-3 py-2 font-medium ${h === "" || h === "SKU" || h === "Product" ? "text-left" : "text-right"} ${h.includes("✎") ? "text-blue-400" : ""}`}>{h}</th>
               ))}
             </tr>
@@ -1485,11 +1485,6 @@ export default function WPPage() {
                   <td className="px-3 py-1.5 text-right text-slate-600 text-[10px]">—</td>
                   <td className="px-3 py-1.5 text-right text-slate-600 text-[10px]">—</td>
                   <td className="px-3 py-1.5 text-right text-slate-600 text-[10px]">—</td>
-                  <td className="px-3 py-1.5 text-right">
-                    {modified
-                      ? <span className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">Modified</span>
-                      : <span className="text-slate-600 text-[10px]">—</span>}
-                  </td>
                 </tr>,
                 /* Individual SKU rows */
                 ...groupRows.map((p) => {
@@ -1546,18 +1541,6 @@ export default function WPPage() {
                           onCommit={(v) => handleSKUSettingEdit(p.hierarchy_code, "target_wos", v)}
                         />
                       </td>
-                      <td className="px-3 py-1.5 text-right">
-                        {(() => {
-                          const es = (p as PortfolioRow).exception_status;
-                          const mc = (p as PortfolioRow).min_coverage_wks;
-                          const tip = mc != null ? `Worst coverage: ${mc} wks` : "";
-                          if (es === "critical") return <span title={tip} className="text-red-400 bg-red-900/30 px-1.5 py-0.5 rounded text-[10px] font-semibold">⚠ Stockout risk</span>;
-                          if (es === "low")      return <span title={tip} className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">↓ Low stock</span>;
-                          if (es === "excess")   return <span title={tip} className="text-orange-400 bg-orange-900/20 px-1.5 py-0.5 rounded text-[10px]">↑ Excess</span>;
-                          if (p._modified)       return <span className="text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded text-[10px]">Modified</span>;
-                          return <span className="text-emerald-500 text-[10px]">✓ Healthy</span>;
-                        })()}
-                      </td>
                     </tr>
                   );
                 }),
@@ -1610,8 +1593,12 @@ export default function WPPage() {
           {canEdit && chartCombos.length > 1 && (
             <select
               value={detailCombo}
-              onChange={(e) => setDetailCombo(e.target.value)}
-              title="Focus the weekly grid on one SKU × channel. Edits, Accept and Top-down still apply to the full selection."
+              onChange={(e) => {
+                const v = e.target.value;
+                setDetailCombo(v);
+                if (v) setChartCombo(v);   // sync the Units-by-Week chart to the focused combo
+              }}
+              title="Focus the weekly grid (and the chart) on one SKU × channel. Accept, Top-down and Undo act on the focused combo; pick 'All' to act on the full selection."
               className="bg-slate-700 border border-slate-600 text-xs text-slate-200 rounded px-2 py-1 outline-none focus:border-blue-500 cursor-pointer"
             >
               <option value="">All {chartCombos.length} combos</option>
