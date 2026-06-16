@@ -2090,19 +2090,23 @@ def get_exceptions_panel() -> List[Dict]:
     return sorted(result, key=lambda x: (severity_order[x["exception_status"]], x["coverage_wks"]))
 
 
-def get_budget() -> Dict:
-    """Return OTB receipt budget, current plan consumption, and category breakdown."""
+def get_budget(hc_list: List[int] = None, ch_list: List[str] = None) -> Dict:
+    """Return OTB receipt budget, current plan consumption, and category breakdown.
+    hc_list/ch_list: optional filters; None means all."""
     budget_str = db_get_setting("otb_budget")
     budget = float(budget_str) if budget_str else 0.0
 
     planned_cost = 0.0
     category_costs: Dict[str, float] = {}
     for r in get_agg_rows():
-        if not r.get("actualised"):
-            cost = r["total_receipt_units"] * r.get("written_auc", 0)
-            planned_cost += cost
-            cat = r.get("l1_name", "Other")
-            category_costs[cat] = category_costs.get(cat, 0.0) + cost
+        if hc_list is not None and r["hierarchy_code"] not in hc_list:
+            continue
+        if ch_list is not None and r["channel"] not in ch_list:
+            continue
+        cost = r["total_receipt_units"] * r.get("written_auc", 0)
+        planned_cost += cost
+        cat = r.get("l1_name", "Other")
+        category_costs[cat] = category_costs.get(cat, 0.0) + cost
 
     planned_cost = round(planned_cost, 2)
     category_breakdown = {cat: round(v, 2) for cat, v in sorted(category_costs.items())}

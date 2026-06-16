@@ -436,23 +436,13 @@ export default function WPPage() {
 
   // Editing (and viewing weekly detail) requires at least 1 product AND at least 1 channel
   const canEdit = selectedHcs.length >= 1 && selectedChannels.length >= 1;
+  const isFiltered = selectedHcs.length > 0 || selectedChannels.length > 0;
 
-  // Filtered summary derived from loaded rows — updates automatically with selection
-  const filteredSummary = useMemo(() => {
-    if (!canEdit || rows.length === 0) return null;
-    const total_u = rows.reduce((s, r) => s + r.written_sales_units, 0);
-    const total_d = rows.reduce((s, r) => s + r.written_sales_dollars, 0);
-    const total_g = rows.reduce((s, r) => s + r.written_gm_dollar, 0);
-    return {
-      total_written_sales_units: total_u,
-      total_written_sales_dollars: Math.round(total_d * 100) / 100,
-      total_written_gm_dollar: Math.round(total_g * 100) / 100,
-      avg_written_gm_perc: total_d > 0 ? Math.round(total_g / total_d * 10000) / 10000 : 0,
-    };
-  }, [canEdit, rows]);
+  const [filteredSummary, setFilteredSummary] = useState<Summary | null>(null);
+  const [filteredBudget, setFilteredBudget] = useState<BudgetData | null>(null);
 
-  const displaySummary = canEdit ? filteredSummary : currentSummary;
-  const isFiltered = canEdit;
+  const displaySummary = isFiltered ? filteredSummary : currentSummary;
+  const displayBudget  = isFiltered ? filteredBudget  : budgetData;
 
   function showToast(message: string, type: "success" | "error" = "success") {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -488,7 +478,33 @@ export default function WPPage() {
     setExceptions(ex);
     setBudgetData(bud);
     setSeasonProgress(sp);
-  }, []);
+    // Re-fetch filtered cards too so edits reflect in the filtered view
+    if (isFiltered) {
+      const params: Record<string, string> = {};
+      if (selectedHcs.length > 0) params.hierarchy_codes = selectedHcs.join(",");
+      if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
+      const [fs, fb] = await Promise.all([fetchWPSummary(params), fetchBudget(params)]);
+      setFilteredSummary(fs && Object.keys(fs).length ? fs : null);
+      setFilteredBudget(fb);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFiltered, hcsKey, chsKey]);
+
+  // Reload filtered KPI cards whenever selection changes
+  const reloadFilteredCards = useCallback(async () => {
+    if (!isFiltered) {
+      setFilteredSummary(null);
+      setFilteredBudget(null);
+      return;
+    }
+    const params: Record<string, string> = {};
+    if (selectedHcs.length > 0) params.hierarchy_codes = selectedHcs.join(",");
+    if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
+    const [s, bud] = await Promise.all([fetchWPSummary(params), fetchBudget(params)]);
+    setFilteredSummary(s && Object.keys(s).length ? s : null);
+    setFilteredBudget(bud);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFiltered, hcsKey, chsKey]);
 
   const reloadRows = useCallback(async () => {
     if (!canEdit) { setRows([]); return; }
@@ -526,6 +542,7 @@ export default function WPPage() {
   }, []);
 
   useEffect(() => { reloadRows(); }, [reloadRows]);
+  useEffect(() => { reloadFilteredCards(); }, [reloadFilteredCards]);
 
   // Reset chart combo to first available whenever rows change
   useEffect(() => {
@@ -1273,67 +1290,72 @@ export default function WPPage() {
             );
           })()}
           {/* OTB Budget card */}
-          <div className={`rounded-lg p-4 border ${budgetData && budgetData.budget > 0 && budgetData.remaining !== null && budgetData.remaining < 0 ? "bg-red-950/40 border-red-800" : "bg-slate-800 border-slate-700"}`}>
-            <div className="text-xs text-slate-400 mb-1">Receipt Budget (cost)</div>
-            {budgetData && budgetData.budget > 0 ? (
-              <>
-                <div className="text-xl font-bold text-white">{fmtD(budgetData.planned_cost)}</div>
-                <div className="text-[10px] mt-1 text-slate-400">
-                  of {fmtD(budgetData.budget)} budget
-                  {budgetData.remaining !== null && (
-                    <span className={budgetData.remaining < 0 ? " text-red-400 font-semibold" : " text-emerald-400"}>
-                      {" "}({budgetData.remaining >= 0 ? "+" : ""}{fmtD(budgetData.remaining)} remaining)
-                    </span>
-                  )}
-                </div>
-                {budgetData.pct_consumed !== null && (
-                  <div className="mt-1.5 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${budgetData.pct_consumed > 1 ? "bg-red-500" : budgetData.pct_consumed > 0.85 ? "bg-amber-500" : "bg-emerald-500"}`}
-                      style={{ width: `${Math.min(budgetData.pct_consumed * 100, 100)}%` }}
-                    />
+          {(() => {
+            const bd = displayBudget;
+            return (
+            <div className={`rounded-lg p-4 border ${bd && bd.budget > 0 && bd.remaining !== null && bd.remaining < 0 ? "bg-red-950/40 border-red-800" : "bg-slate-800 border-slate-700"}`}>
+              <div className="text-xs text-slate-400 mb-1">Receipt Budget (cost)</div>
+              {bd && bd.budget > 0 ? (
+                <>
+                  <div className="text-xl font-bold text-white">{fmtD(bd.planned_cost)}</div>
+                  <div className="text-[10px] mt-1 text-slate-400">
+                    of {fmtD(bd.budget)} budget
+                    {bd.remaining !== null && (
+                      <span className={bd.remaining < 0 ? " text-red-400 font-semibold" : " text-emerald-400"}>
+                        {" "}({bd.remaining >= 0 ? "+" : ""}{fmtD(bd.remaining)} remaining)
+                      </span>
+                    )}
                   </div>
-                )}
-              </>
-            ) : (
-              <div className="text-sm text-slate-500 mt-1">No budget set</div>
-            )}
-            {/* Category breakdown */}
-            {budgetData?.category_breakdown && Object.keys(budgetData.category_breakdown).length > 0 && (
-              <div className="mt-2 space-y-0.5">
-                {Object.entries(budgetData.category_breakdown).map(([cat, cost]) => {
-                  const catPct = budgetData.planned_cost > 0 ? cost / budgetData.planned_cost : 0;
-                  const catBudget = budgetData.budget > 0 ? cost / budgetData.budget : 0;
-                  return (
-                    <div key={cat} className="text-[9px]">
-                      <div className="flex justify-between text-slate-500 mb-0.5">
-                        <span>{cat}</span>
-                        <span className={catBudget > 1 ? "text-red-400" : "text-slate-400"}>{fmtD(cost)} <span className="text-slate-600">({(catPct * 100).toFixed(0)}%)</span></span>
-                      </div>
-                      <div className="h-0.5 bg-slate-700 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${catBudget > 1 ? "bg-red-500" : catBudget > 0.85 ? "bg-amber-500" : "bg-blue-500"}`}
-                          style={{ width: `${Math.min(catBudget * 100, 100)}%` }}
-                        />
-                      </div>
+                  {bd.pct_consumed !== null && (
+                    <div className="mt-1.5 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${bd.pct_consumed > 1 ? "bg-red-500" : bd.pct_consumed > 0.85 ? "bg-amber-500" : "bg-emerald-500"}`}
+                        style={{ width: `${Math.min(bd.pct_consumed * 100, 100)}%` }}
+                      />
                     </div>
-                  );
-                })}
+                  )}
+                </>
+              ) : (
+                <div className="text-sm text-slate-500 mt-1">No budget set</div>
+              )}
+              {/* Category breakdown */}
+              {bd?.category_breakdown && Object.keys(bd.category_breakdown).length > 0 && (
+                <div className="mt-2 space-y-0.5">
+                  {Object.entries(bd.category_breakdown).map(([cat, cost]) => {
+                    const catPct = bd.planned_cost > 0 ? cost / bd.planned_cost : 0;
+                    const catBudget = bd.budget > 0 ? cost / bd.budget : 0;
+                    return (
+                      <div key={cat} className="text-[9px]">
+                        <div className="flex justify-between text-slate-500 mb-0.5">
+                          <span>{cat}</span>
+                          <span className={catBudget > 1 ? "text-red-400" : "text-slate-400"}>{fmtD(cost)} <span className="text-slate-600">({(catPct * 100).toFixed(0)}%)</span></span>
+                        </div>
+                        <div className="h-0.5 bg-slate-700 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${catBudget > 1 ? "bg-red-500" : catBudget > 0.85 ? "bg-amber-500" : "bg-blue-500"}`}
+                            style={{ width: `${Math.min(catBudget * 100, 100)}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="flex gap-1 mt-2">
+                <input
+                  value={budgetInput}
+                  onChange={(e) => setBudgetInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleBudgetSave()}
+                  placeholder={budgetData?.budget ? fmtD(budgetData.budget) : "Set budget…"}
+                  className="bg-slate-900 border border-slate-700 text-[10px] text-slate-300 rounded px-2 py-1 w-24 outline-none focus:border-blue-500"
+                />
+                <button onClick={handleBudgetSave} disabled={!budgetInput.trim()}
+                  className="text-[10px] bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-300 px-2 py-1 rounded transition-colors"
+                >Set</button>
               </div>
-            )}
-            <div className="flex gap-1 mt-2">
-              <input
-                value={budgetInput}
-                onChange={(e) => setBudgetInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleBudgetSave()}
-                placeholder={budgetData?.budget ? fmtD(budgetData.budget) : "Set budget…"}
-                className="bg-slate-900 border border-slate-700 text-[10px] text-slate-300 rounded px-2 py-1 w-24 outline-none focus:border-blue-500"
-              />
-              <button onClick={handleBudgetSave} disabled={!budgetInput.trim()}
-                className="text-[10px] bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-300 px-2 py-1 rounded transition-colors"
-              >Set</button>
             </div>
-          </div>
+            );
+          })()}
         </div>
         );
       })()}

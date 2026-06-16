@@ -145,8 +145,17 @@ def get_wp_by_week(
 def get_wp_summary(
     hierarchy_code: Optional[int] = None,
     channel: Optional[str] = None,
+    hierarchy_codes: Optional[str] = None,
+    channels: Optional[str] = None,
     baseline: bool = False,
 ):
+    hc_list = [int(x) for x in hierarchy_codes.split(",") if x.strip()] if hierarchy_codes else (
+        [hierarchy_code] if hierarchy_code is not None else None
+    )
+    ch_list = [x.strip() for x in channels.split(",") if x.strip()] if channels else (
+        [channel] if channel else None
+    )
+
     if baseline:
         rows = [
             {"written_sales_units": r["written_sales_units"],
@@ -154,11 +163,23 @@ def get_wp_summary(
              "written_gm_dollar": r["written_gm_dollar"],
              "written_gm_perc": r["written_gm_perc"]}
             for r in WP_DATA
-            if (not hierarchy_code or r["hierarchy_code"] == hierarchy_code)
-            and (not channel or r["channel"] == channel)
+            if (hc_list is None or r["hierarchy_code"] in hc_list)
+            and (ch_list is None or r["channel"] in ch_list)
         ]
     else:
-        rows = get_agg_rows(hierarchy_code, channel)
+        if hc_list and ch_list:
+            rows = []
+            for hc in hc_list:
+                for ch in ch_list:
+                    rows.extend(get_agg_rows(hc, ch))
+        elif hc_list:
+            rows = []
+            for hc in hc_list:
+                rows.extend(get_agg_rows(hc, None))
+        elif ch_list:
+            rows = [r for r in get_agg_rows() if r["channel"] in ch_list]
+        else:
+            rows = get_agg_rows()
 
     if not rows:
         return {}
@@ -503,8 +524,13 @@ class BudgetRequest(BaseModel):
 
 
 @router.get("/budget")
-def read_budget():
-    return get_budget()
+def read_budget(
+    hierarchy_codes: Optional[str] = None,
+    channels: Optional[str] = None,
+):
+    hc_list = [int(x) for x in hierarchy_codes.split(",") if x.strip()] if hierarchy_codes else None
+    ch_list = [x.strip() for x in channels.split(",") if x.strip()] if channels else None
+    return get_budget(hc_list, ch_list)
 
 
 @router.put("/budget")

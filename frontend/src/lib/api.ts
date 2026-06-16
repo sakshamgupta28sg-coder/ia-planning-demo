@@ -232,8 +232,9 @@ export async function fetchAuditLog(limit = 100, hierarchy_code?: number, field?
   return res.json();
 }
 
-export async function fetchBudget() {
-  const res = await fetch(`${BASE}/wp/budget`, { cache: "no-store" });
+export async function fetchBudget(params?: Record<string, string>) {
+  const qs = params && Object.keys(params).length ? "?" + new URLSearchParams(params).toString() : "";
+  const res = await fetch(`${BASE}/wp/budget${qs}`, { cache: "no-store" });
   return res.json();
 }
 
