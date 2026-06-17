@@ -726,14 +726,14 @@ export default function WPPage() {
   // Toolbar bulk actions (Accept, Undo, Top-down, Shift) act on the focused combo
   // when one is selected in the weekly-detail dropdown; otherwise the full selection.
   // WYSIWYG: what the grid shows is what the action writes.
-  function bulkTarget(): { hierarchy_codes: number[]; channels: string[] } {
+  function bulkTarget(): { hierarchy_codes: number[]; channels: string[]; year: number } {
     if (detailCombo) {
       const idx = detailCombo.indexOf("_");
       const hc = detailCombo.slice(0, idx);
       const ch = detailCombo.slice(idx + 1);
-      return { hierarchy_codes: [Number(hc)], channels: [ch] };
+      return { hierarchy_codes: [Number(hc)], channels: [ch], year: selectedYear };
     }
-    return { hierarchy_codes: selectedHcs.map(Number), channels: selectedChannels };
+    return { hierarchy_codes: selectedHcs.map(Number), channels: selectedChannels, year: selectedYear };
   }
 
   async function handleTopDownPreview() {

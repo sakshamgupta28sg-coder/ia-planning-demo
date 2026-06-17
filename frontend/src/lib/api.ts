@@ -197,6 +197,7 @@ export async function topDownDistribute(body: {
   target: number;
   field: string;
   week_values?: { hierarchy_code: number; channel: string; current_week: number; value: number }[];
+  year?: number;
 }) {
   const res = await fetch(`${BASE}/wp/top-down`, {
     method: "POST",
@@ -207,7 +208,7 @@ export async function topDownDistribute(body: {
   return res.json();
 }
 
-export async function undoTopDown(body: { hierarchy_codes: number[]; channels: string[] }) {
+export async function undoTopDown(body: { hierarchy_codes: number[]; channels: string[]; year?: number }) {
   const res = await fetch(`${BASE}/wp/top-down/undo`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -221,6 +222,7 @@ export async function bulkShiftReceipts(body: {
   hierarchy_codes: number[];
   channels: string[];
   shift_weeks: number;
+  year?: number;
 }) {
   const res = await fetch(`${BASE}/wp/bulk-shift`, {
     method: "POST",
@@ -236,6 +238,7 @@ export async function previewTopDown(body: {
   channels: string[];
   target: number;
   field: string;
+  year?: number;
 }) {
   const res = await fetch(`${BASE}/wp/top-down/preview`, {
     method: "POST",
@@ -290,7 +293,7 @@ export async function updateBudget(budget: number, params?: Record<string, strin
   return res.json();
 }
 
-export async function acceptRecomm(body: { hierarchy_codes: number[]; channels: string[] }) {
+export async function acceptRecomm(body: { hierarchy_codes: number[]; channels: string[]; year?: number }) {
   const res = await fetch(`${BASE}/wp/accept-recomm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -300,7 +303,7 @@ export async function acceptRecomm(body: { hierarchy_codes: number[]; channels: 
   return res.json();
 }
 
-export async function undoRecomm(body: { hierarchy_codes: number[]; channels: string[] }) {
+export async function undoRecomm(body: { hierarchy_codes: number[]; channels: string[]; year?: number }) {
   const res = await fetch(`${BASE}/wp/undo-recomm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

@@ -473,6 +473,7 @@ class TopDownRequest(BaseModel):
     target: float = Field(gt=0, description="Total target to distribute across planning weeks")
     field: str = "written_sales_units"
     week_values: Optional[list] = None  # list of WeekValueItem dicts — skips LY weight calc
+    year: int = DEFAULT_YEAR
 
 
 @router.post("/top-down/preview")
@@ -486,6 +487,7 @@ def top_down_preview(body: TopDownRequest):
         list(body.channels),
         body.target,
         body.field,
+        year=body.year,
     )
 
 
@@ -500,6 +502,7 @@ def top_down_distribute(body: TopDownRequest):
         body.target,
         body.field,
         week_values=body.week_values,
+        year=body.year,
     )
     return {"applied": count, "current_week": CURRENT_WEEK}
 
@@ -507,6 +510,7 @@ def top_down_distribute(body: TopDownRequest):
 class HcChannelRequest(BaseModel):
     hierarchy_codes: list
     channels: list
+    year: int = DEFAULT_YEAR
 
 
 @router.post("/top-down/undo")
@@ -515,6 +519,7 @@ def top_down_undo(body: HcChannelRequest):
     count = undo_top_down(
         [int(hc) for hc in body.hierarchy_codes],
         list(body.channels),
+        year=body.year,
     )
     return {"cleared": count}
 
@@ -524,6 +529,7 @@ class BulkShiftRequest(BaseModel):
     hierarchy_codes: list
     channels: list
     shift_weeks: int = Field(description="Positive = push later, negative = pull earlier")
+    year: int = DEFAULT_YEAR
 
 
 @router.post("/bulk-shift")
@@ -535,6 +541,7 @@ def bulk_shift(body: BulkShiftRequest):
         [int(hc) for hc in body.hierarchy_codes],
         list(body.channels),
         body.shift_weeks,
+        year=body.year,
     )
     return result
 
@@ -543,6 +550,7 @@ def bulk_shift(body: BulkShiftRequest):
 class AcceptRecommRequest(BaseModel):
     hierarchy_codes: list
     channels: list
+    year: int = DEFAULT_YEAR
 
 
 @router.post("/accept-recomm")
@@ -551,6 +559,7 @@ def accept_recomm(body: AcceptRecommRequest):
     count = accept_recomm_receipts(
         [int(hc) for hc in body.hierarchy_codes],
         list(body.channels),
+        year=body.year,
     )
     return {"applied": count}
 
@@ -561,6 +570,7 @@ def undo_recomm(body: AcceptRecommRequest):
     count = undo_recomm_receipts(
         [int(hc) for hc in body.hierarchy_codes],
         list(body.channels),
+        year=body.year,
     )
     return {"cleared": count}
 

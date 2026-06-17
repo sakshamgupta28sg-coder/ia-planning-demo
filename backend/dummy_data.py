@@ -1772,6 +1772,15 @@ def _apply_newsku_disc_borrow(rows) -> None:
 
 
 def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = None) -> Dict:
+    # The fiscal year is encoded in the week code (202730 → 2027). Scope the whole
+    # edit — lock check, recomm rebuild (walks FISCAL_WEEKS), and the re-read — to that
+    # year so edits work in any viewed year. For 2026 this is the same as not scoping.
+    with _scoped_year(wk // 100):
+        return _apply_edit_impl(hc, wk, ch, field, value, mode)
+
+
+def _apply_edit_impl(hc: int, wk: int, ch: str, field: str, value: float, mode: str = None) -> Dict:
+    year = wk // 100
     key = _ovr_key(hc, wk, ch)
 
     # Reject OO Placed edits on locked tail weeks — an order placed here would
@@ -1817,7 +1826,7 @@ def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = 
     elif field == "on_order_placed_total_unit":
         _rebuild_pipeline_and_recomm([hc], [ch])
 
-    rows = get_agg_rows(hc, ch)
+    rows = get_agg_rows(hc, ch, year=year)
     return next((r for r in rows if r["current_week"] == wk), None)
 
 
@@ -2081,7 +2090,13 @@ def clear_single_override(hc: int, wk: int, ch: str) -> Dict:
     return next((r for r in rows if r["current_week"] == wk), {})
 
 
-def shift_receipts(hcs: List[int], channels: List[str], shift_weeks: int) -> Dict:
+def shift_receipts(hcs: List[int], channels: List[str], shift_weeks: int, year: int = DEFAULT_YEAR) -> Dict:
+    """Shift OO Placed by N fiscal weeks, scoped to the viewed fiscal year."""
+    with _scoped_year(year):
+        return _shift_receipts_impl(hcs, channels, shift_weeks, year)
+
+
+def _shift_receipts_impl(hcs: List[int], channels: List[str], shift_weeks: int, year: int = DEFAULT_YEAR) -> Dict:
     """Shift all OO Placed values for given SKUs×channels by N fiscal weeks.
 
     Positive shift_weeks = push later (supplier delay).
@@ -2093,7 +2108,8 @@ def shift_receipts(hcs: List[int], channels: List[str], shift_weeks: int) -> Dic
     if shift_weeks == 0:
         return {"shifted": 0, "dropped": 0}
 
-    planning_wks = {w for w in FISCAL_WEEKS if w > CURRENT_WEEK}
+    # In a future year (every week > CURRENT_WEEK) all weeks are planning.
+    planning_wks = {w for w in FISCAL_WEEKS if w > CURRENT_WEEK} or set(FISCAL_WEEKS)
     overrides = db_get_overrides()
     updates: Dict[str, Dict] = {}
 
@@ -2104,7 +2120,7 @@ def shift_receipts(hcs: List[int], channels: List[str], shift_weeks: int) -> Dic
         for ch in channels:
             # Collect current OO for planning weeks (from live agg rows so overrides are reflected)
             oo_by_week: Dict[int, float] = {}
-            for r in get_agg_rows(hc, ch):
+            for r in get_agg_rows(hc, ch, year=year):
                 if r["current_week"] in planning_wks:
                     oo = float(r.get("on_order_placed_total_unit", 0))
                     if oo > 0:
@@ -2148,11 +2164,11 @@ def shift_receipts(hcs: List[int], channels: List[str], shift_weeks: int) -> Dic
     return {"shifted": shifted, "dropped": dropped}
 
 
-def accept_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
+def accept_recomm_receipts(hcs: List[int], channels: List[str], year: int = DEFAULT_YEAR) -> int:
     """Set OO Placed = Recomm Receipt for all planning weeks of given SKUs×channels.
 
     One-click replacement for manually editing OO Placed week-by-week.
-    Returns count of rows updated.
+    Returns count of rows updated. Operates on the viewed fiscal year.
     """
     count = 0
     for hc in hcs:
@@ -2166,14 +2182,14 @@ def accept_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
             # ballooning end-of-season EOP. Iterating converges instead.
             weeks = sorted(
                 r["current_week"]
-                for r in get_agg_rows(hc, ch)
+                for r in get_agg_rows(hc, ch, year=year)
                 if not r.get("actualised")
                 and not r.get("is_ongoing")
                 and not r.get("oo_locked")
             )
             for wk in weeks:
                 fresh = next(
-                    (r for r in get_agg_rows(hc, ch) if r["current_week"] == wk),
+                    (r for r in get_agg_rows(hc, ch, year=year) if r["current_week"] == wk),
                     None,
                 )
                 if fresh is None or fresh.get("oo_locked"):
@@ -2186,7 +2202,7 @@ def accept_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
     return count
 
 
-def undo_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
+def undo_recomm_receipts(hcs: List[int], channels: List[str], year: int = DEFAULT_YEAR) -> int:
     """Inverse of accept_recomm_receipts: clear OO Placed on planning weeks.
 
     Removes the `on_order_placed_total_unit` override from every unlocked,
@@ -2203,7 +2219,7 @@ def undo_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
             # Planning weeks where the planner could have placed an order.
             planning_wks = {
                 r["current_week"]
-                for r in get_agg_rows(hc, ch)
+                for r in get_agg_rows(hc, ch, year=year)
                 if not r.get("actualised")
                 and not r.get("is_ongoing")
                 and not r.get("oo_locked")
@@ -2225,11 +2241,12 @@ def undo_recomm_receipts(hcs: List[int], channels: List[str]) -> int:
                 count += 1
                 touched = True
     if touched:
-        _rebuild_pipeline_and_recomm(hcs, channels)
+        with _scoped_year(year):
+            _rebuild_pipeline_and_recomm(hcs, channels)
     return count
 
 
-def undo_top_down(hcs: List[int], channels: List[str]) -> int:
+def undo_top_down(hcs: List[int], channels: List[str], year: int = DEFAULT_YEAR) -> int:
     """Inverse of apply_top_down: clear the written-sales split on planning weeks.
 
     Removes BOTH `written_sales_units` and `written_sales_dollars` overrides from
@@ -2247,7 +2264,7 @@ def undo_top_down(hcs: List[int], channels: List[str]) -> int:
         for ch in channels:
             planning_wks = {
                 r["current_week"]
-                for r in get_agg_rows(hc, ch)
+                for r in get_agg_rows(hc, ch, year=year)
                 if not r.get("actualised") and not r.get("is_ongoing")
             }
             for wk in planning_wks:
@@ -2272,11 +2289,13 @@ def undo_top_down(hcs: List[int], channels: List[str]) -> int:
                 count += 1
                 touched = True
     if touched:
-        _rebuild_fwd_demand_and_recomm(hcs, channels)
+        with _scoped_year(year):
+            _rebuild_fwd_demand_and_recomm(hcs, channels)
     return count
 
 
-def preview_top_down(hcs: List[int], channels: List[str], target: float, field: str) -> Dict:
+def preview_top_down(hcs: List[int], channels: List[str], target: float, field: str,
+                     year: int = DEFAULT_YEAR) -> Dict:
     """Dry-run of apply_top_down — same weight logic, no DB writes.
 
     Returns per-week proposed values and an aggregated summary so the
@@ -2297,7 +2316,7 @@ def preview_top_down(hcs: List[int], channels: List[str], target: float, field: 
     planning_rows: List[Dict] = []
     for hc in hcs:
         for ch in channels:
-            for r in get_agg_rows(hc, ch):
+            for r in get_agg_rows(hc, ch, year=year):
                 if not r["actualised"] and not r.get("is_ongoing", False):
                     planning_rows.append(r)
 
@@ -2606,7 +2625,14 @@ def get_season_progress(hc_list: List[int] = None, ch_list: List[str] = None, ye
 
 
 def apply_top_down(hcs: List[int], channels: List[str], target: float, field: str,
-                   week_values: List[Dict] = None) -> int:
+                   week_values: List[Dict] = None, year: int = DEFAULT_YEAR) -> int:
+    """Distribute `target` across the viewed year's planning weeks (scoped)."""
+    with _scoped_year(year):
+        return _apply_top_down_impl(hcs, channels, target, field, week_values, year)
+
+
+def _apply_top_down_impl(hcs: List[int], channels: List[str], target: float, field: str,
+                         week_values: List[Dict] = None, year: int = DEFAULT_YEAR) -> int:
     """
     Distribute `target` across all planning weeks (not actualised, not ongoing)
     for the given HCs × channels.
@@ -2641,7 +2667,7 @@ def apply_top_down(hcs: List[int], channels: List[str], target: float, field: st
     planning_rows: List[Dict] = []
     for hc in hcs:
         for ch in channels:
-            for r in get_agg_rows(hc, ch):
+            for r in get_agg_rows(hc, ch, year=year):
                 if not r["actualised"] and not r.get("is_ongoing", False):
                     planning_rows.append(r)
 
