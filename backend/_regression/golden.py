@@ -49,27 +49,34 @@ def capture():
     print(f"baseline captured: {len(_dump(data))} bytes, sha={hashlib.sha256(_dump(data).encode()).hexdigest()[:12]}")
 
 
-def verify():
+def verify(core_only: bool = False):
     if not os.path.exists(BASELINE):
         print("NO BASELINE — run capture first"); sys.exit(2)
     with open(BASELINE, encoding="utf-8") as f:
         base = json.loads(f.read())
     cur = _canonical()
-    base_keys, cur_keys = set(base), set(cur)
-    if base_keys != cur_keys:
-        print("KEY MISMATCH")
-        print("  only in baseline:", sorted(base_keys - cur_keys)[:10])
-        print("  only in current :", sorted(cur_keys - base_keys)[:10])
-        sys.exit(1)
-    diffs = [k for k in base if _dump(base[k]) != _dump(cur[k])]
+    # Portfolio-level sections aggregate ALL SKUs, so they legitimately change once
+    # New SKUs join. core mode checks only the original-8-SKU sections, which must
+    # stay byte-identical no matter what is added.
+    PORTFOLIO = {"agg_all", "budget_portfolio", "season_portfolio", "exceptions"}
+    keys = [k for k in base if not (core_only and k in PORTFOLIO)]
+    missing = [k for k in keys if k not in cur]
+    if missing:
+        print("KEY MISMATCH — missing in current:", missing[:10]); sys.exit(1)
+    diffs = [k for k in keys if _dump(base[k]) != _dump(cur[k])]
     if diffs:
         print(f"FAIL — {len(diffs)} sections differ:")
         for k in diffs[:10]:
             print("  ", k)
         sys.exit(1)
-    print(f"PASS — all {len(cur)} sections byte-identical to baseline")
+    label = "original-SKU" if core_only else "all"
+    print(f"PASS — {len(keys)} {label} sections byte-identical to baseline")
+
+
+def verify_core():
+    verify(core_only=True)
 
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "verify"
-    {"capture": capture, "verify": verify}.get(mode, verify)()
+    {"capture": capture, "verify": verify, "verify_core": verify_core}.get(mode, verify)()

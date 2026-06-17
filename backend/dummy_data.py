@@ -210,6 +210,37 @@ HIERARCHY_METRICS = {
             "target_wos": 5, "lead_time_weeks": 10, "case_pack": 24, "safety_weeks": 1},
 }
 
+# ── Pre-seeded New SKUs ───────────────────────────────────────────────────────────
+# Real products onboarded mid-life. Appended to the catalog AFTER the originals so
+# the original-8 generation + RNG stay byte-identical. Each has its OWN price/curve;
+# it only BORROWS Disc% from a tagged Old SKU during its New year (first 52 weeks from
+# activation), because it has no LY/LLY history yet. Activations land in 2026 so they
+# read as New in the 2026 view and flip to Old by the 2028 view.
+NEW_SKU_HCS = {30001, 30002}
+NEW_SKU_HIERARCHIES = [
+    {"hierarchy_code": 30001, "l1_name": "Footwear", "l2_name": "Trail Runners", "sku_code": "FW-TRL-301"},
+    {"hierarchy_code": 30002, "l1_name": "Apparel",  "l2_name": "Puffer Jacket", "sku_code": "AP-PUF-302"},
+]
+NEW_SKU_METRICS = {
+    30001: {"air": 134.99, "auc": 48.0, "peak_week": 28, "peak_units": 150,
+            "target_wos": 6, "lead_time_weeks": 12, "case_pack": 6, "safety_weeks": 2},
+    30002: {"air":  99.99, "auc": 34.0, "peak_week": 44, "peak_units": 180,
+            "target_wos": 8, "lead_time_weeks": 12, "case_pack": 8, "safety_weeks": 2},
+}
+# Lifecycle + descriptive attrs per New SKU (Old SKUs default to long-lived in the seed).
+NEW_SKU_LIFECYCLE = {
+    30001: {"activation_week": 202614, "deactivation_week": 202852, "tagged_to": 10001, "color": "Green", "size": "US 9"},
+    30002: {"activation_week": 202624, "deactivation_week": 202852, "tagged_to": 10007, "color": "Olive", "size": "M"},
+}
+NEW_SKU_SUPPLY = {
+    30001: {"open_wos": 5, "commit_through": 33, "commit_mult": 1.0},
+    30002: {"open_wos": 4, "commit_through": 40, "commit_mult": 0.8},
+}
+# Metrics for New SKUs merge now (harmless dict); the New SKUs are NOT added to the
+# HIERARCHIES list until AFTER the original-8 generation (see the generation block),
+# so the originals' RNG stream — and thus TY/LY — stays byte-identical.
+HIERARCHY_METRICS = {**HIERARCHY_METRICS, **NEW_SKU_METRICS}
+
 # Committed-supply (buy) posture per SKU — models a REAL pre-season buy instead of
 # auto-stocking every week to target. A buyer commits an initial inventory + a schedule
 # of receipts that covers the early/peak weeks; after `commit_through` the committed buy
@@ -235,6 +266,7 @@ SUPPLY_PROFILE = {
     10007: {"open_wos": 4, "commit_through": 32, "commit_mult": 0.7},  # Hoodies        – under-bought, late peak
     10008: {"open_wos": 7, "commit_through": 40, "commit_mult": 1.4},  # Activewear     – mild over-bought early-peak
 }
+SUPPLY_PROFILE = {**SUPPLY_PROFILE, **NEW_SKU_SUPPLY}  # include pre-seeded New SKUs
 
 CHANNEL_SPLIT = {"Ecom": 0.55, "Indirect": 0.30, "Store": 0.15}
 
@@ -461,13 +493,14 @@ def _compute_recomm_receipt(hc: int, ch: str, wk: int, eop_units: int) -> int:
     return int(_math.ceil(raw / cp) * cp) if (raw > 0 and cp > 0) else 0
 
 
-def generate_wp_data() -> List[Dict]:
+def generate_wp_data(hierarchies=None) -> List[Dict]:
     global _FORWARD_DEMAND_INDEX, _WOS_DEMAND_INDEX
+    hierarchies = hierarchies if hierarchies is not None else HIERARCHIES
     rows: List[Dict] = []
     demand_index: Dict[tuple, int] = {}  # (hc, ch, wk) → planned sales units
 
     # ── Pass 1: generate rows + collect demand per cell ───────────────────────
-    for h in HIERARCHIES:
+    for h in hierarchies:
         hc = h["hierarchy_code"]
         m = HIERARCHY_METRICS[hc]
         # Calibrate opening BOP so week 21 WOS ≈ (target_wos + 2) using 8-week window.
@@ -559,7 +592,7 @@ def generate_wp_data() -> List[Dict]:
     # units, receipts and the EOP chain are independent of the discount rate.
     global _LY_DISC, _LLY_DISC
     _LY_DISC, _LLY_DISC = _build_history_discounts()
-    for h in HIERARCHIES:
+    for h in hierarchies:
         hc = h["hierarchy_code"]
         m  = HIERARCHY_METRICS[hc]
         air, auc = m["air"], m["auc"]
@@ -612,7 +645,7 @@ def generate_wp_data() -> List[Dict]:
     row_lkp: Dict[tuple, Dict] = {
         (r["hierarchy_code"], r["channel"], r["current_week"]): r for r in rows
     }
-    for h in HIERARCHIES:
+    for h in hierarchies:
         hc = h["hierarchy_code"]
         m  = HIERARCHY_METRICS[hc]
         cp = m["case_pack"]
@@ -667,7 +700,7 @@ def generate_wp_data() -> List[Dict]:
     # OOP[W] = NEW orders the planner places; they arrive at W+LT and ADD to Rcpt
     # (Rcpt[W] = ingested[W] + OOP[W−LT]). Baseline OOP = 0 (set above). A week is
     # locked when W+LT lands past season end — that order could never be received.
-    for h in HIERARCHIES:
+    for h in hierarchies:
         hc = h["hierarchy_code"]
         lt = HIERARCHY_METRICS[hc]["lead_time_weeks"]
         for ch in CHANNELS:
@@ -823,6 +856,23 @@ for _yr in SELECTABLE_YEARS:
         WP_DATA = WP_DATA + generate_wp_data()      # append future season
         _fwd_acc.update(_FORWARD_DEMAND_INDEX)
         _wos_acc.update(_WOS_DEMAND_INDEX)
+
+# Pre-seeded New SKUs generated LAST (own streams), so the originals' RNG is untouched.
+# Each New SKU is a full season per year; rows BEFORE its activation week are dropped
+# (no metrics pre-launch). Disc% borrow from the tagged Old SKU is applied at read time.
+for _yr in SELECTABLE_YEARS:
+    with _scoped_year(_yr):
+        WP_DATA = WP_DATA + generate_wp_data(hierarchies=NEW_SKU_HIERARCHIES)
+        _fwd_acc.update(_FORWARD_DEMAND_INDEX)
+        _wos_acc.update(_WOS_DEMAND_INDEX)
+WP_DATA = [
+    r for r in WP_DATA
+    if not (r["hierarchy_code"] in NEW_SKU_HCS
+            and r["current_week"] < NEW_SKU_LIFECYCLE[r["hierarchy_code"]]["activation_week"])
+]
+# Now the New SKUs are real catalog members (for filters, active-set, master page).
+HIERARCHIES = HIERARCHIES + NEW_SKU_HIERARCHIES
+CATEGORIES = list(dict.fromkeys(h["l1_name"] for h in HIERARCHIES))
 _FORWARD_DEMAND_INDEX = _fwd_acc
 _WOS_DEMAND_INDEX = _wos_acc
 
@@ -854,6 +904,11 @@ db_replace_fiscal_calendar(FISCAL_CALENDAR)
 db_replace_wp_facts(WP_DATA)
 WP_DATA = db_load_wp_facts()
 
+# Baseline (seed) discount per (hc, week_code, channel) — the source a New SKU borrows
+# from its tagged Old SKU. O(1) lookup built once; Old-SKU seed dr is immutable.
+_BASELINE_DR = {(r["hierarchy_code"], r["current_week"], r["channel"]): r["written_dr_perc"]
+                for r in WP_DATA}
+
 # ── Master SKU catalog ───────────────────────────────────────────────────────────
 # Descriptive (display-only) attributes for the existing 8 SKUs.
 _SKU_DESCRIPTORS = {
@@ -874,26 +929,29 @@ _OLD_DEACTIVATION_WK = 202852
 
 
 def _build_master_sku_seed() -> List[Dict]:
-    """Seed master_sku for the existing 8 SKUs as long-lived Old products."""
+    """Seed master_sku: 8 long-lived Old products + the pre-seeded New SKUs."""
     rows: List[Dict] = []
     for h in HIERARCHIES:
         hc = h["hierarchy_code"]
         m = HIERARCHY_METRICS[hc]
-        color, size = _SKU_DESCRIPTORS.get(hc, (None, None))
-        rows.append({
-            "hierarchy_code": hc,
-            "l1_name": h["l1_name"],
-            "l2_name": h["l2_name"],
-            "sku_code": h.get("sku_code"),
-            "color": color,
-            "size": size,
-            "air": m["air"],
-            "auc": m["auc"],
-            "activation_week": _OLD_ACTIVATION_WK,
-            "deactivation_week": _OLD_DEACTIVATION_WK,
-            "status_seed": "Old",
-            "tagged_to": None,
-        })
+        if hc in NEW_SKU_HCS:
+            lc = NEW_SKU_LIFECYCLE[hc]
+            rows.append({
+                "hierarchy_code": hc, "l1_name": h["l1_name"], "l2_name": h["l2_name"],
+                "sku_code": h.get("sku_code"), "color": lc["color"], "size": lc["size"],
+                "air": m["air"], "auc": m["auc"],
+                "activation_week": lc["activation_week"], "deactivation_week": lc["deactivation_week"],
+                "status_seed": "New", "tagged_to": lc["tagged_to"],
+            })
+        else:
+            color, size = _SKU_DESCRIPTORS.get(hc, (None, None))
+            rows.append({
+                "hierarchy_code": hc, "l1_name": h["l1_name"], "l2_name": h["l2_name"],
+                "sku_code": h.get("sku_code"), "color": color, "size": size,
+                "air": m["air"], "auc": m["auc"],
+                "activation_week": _OLD_ACTIVATION_WK, "deactivation_week": _OLD_DEACTIVATION_WK,
+                "status_seed": "Old", "tagged_to": None,
+            })
     return rows
 
 
@@ -914,8 +972,8 @@ def get_sku_status(hierarchy_code: int, as_of_week: int) -> str:
     now = _CAL_ORDER.get(as_of_week)
     if act is None or now is None:
         return rec["status_seed"]
-    age = now - act
-    return "New" if 0 <= age < 52 else "Old"
+    # New until 52 weeks past activation (incl. pre-launch upcoming SKUs); then Old.
+    return "New" if (now - act) < 52 else "Old"
 
 
 def get_master_catalog(as_of_week: int = None) -> List[Dict]:
@@ -1649,7 +1707,42 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             on_order = int(b.get("on_order_placed_total_unit", 0))
             b["recomm_receipt_units"] = max(0, int(sched[i]) - on_order)
 
+    _apply_newsku_disc_borrow(buckets.values())
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
+
+
+def _apply_newsku_disc_borrow(rows) -> None:
+    """For each New-SKU row inside its New window, override Disc% with the tagged Old
+    SKU's discount for the same week × channel and recompute the dollar/GM fields.
+
+    A New SKU has no LY/LLY history, so its planning-week Disc% would seed to ~0. While
+    it is New (within 52 weeks of activation, by the row's own week), it instead inherits
+    the tagged Old SKU's markdown shape; once it becomes Old it keeps its own (no borrow).
+    Disc% doesn't touch units/receipts/EOP, so the inventory chain is unaffected."""
+    for b in rows:
+        hc = b["hierarchy_code"]
+        if hc not in NEW_SKU_HCS:
+            continue
+        tag = (_MASTER_BY_HC.get(hc) or {}).get("tagged_to")
+        if not tag:
+            continue
+        act = _CAL_ORDER.get(NEW_SKU_LIFECYCLE[hc]["activation_week"])
+        now = _CAL_ORDER.get(b["current_week"])
+        if act is None or now is None or not (0 <= now - act < 52):
+            continue   # outside the New window → keep own (no borrow)
+        dr = _BASELINE_DR.get((tag, b["current_week"], b["channel"]))
+        if dr is None:
+            continue
+        air = b["written_air"]
+        units = b["written_sales_units"]
+        aur = round(air * (1 - dr), 2)
+        b["written_dr_perc"]          = dr
+        b["written_aur"]              = aur
+        b["written_sales_dollars"]    = round(aur * units, 2)
+        b["written_discount_dollars"] = round(units * air * dr, 2)
+        b["written_gm_dollar"]        = round(b["written_sales_dollars"] - b["written_sales_cost"], 2)
+        b["written_gm_perc"]          = round(b["written_gm_dollar"] / b["written_sales_dollars"]
+                                              if b["written_sales_dollars"] else 0, 4)
 
 
 def apply_edit(hc: int, wk: int, ch: str, field: str, value: float, mode: str = None) -> Dict:
