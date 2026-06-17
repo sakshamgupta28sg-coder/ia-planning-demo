@@ -792,9 +792,19 @@ from database import (
     db_delete_override,
     db_log_audit, db_get_audit_log,
     db_get_setting, db_set_setting,
+    db_replace_wp_facts, db_load_wp_facts, db_replace_fiscal_calendar,
 )
 
 init_db()  # create tables on first import; no-op if already exist
+
+# ── Materialize seed into the SQLite "warehouse", then run the engine off it ──────
+# The generated rows + fiscal calendar are written to DB tables (source of truth,
+# real joins), then WP_DATA is RELOADED from wp_facts so the engine operates on the
+# warehouse copy. Round-trip is lossless (JSON payload) → byte-identical to the
+# in-memory generation. Rebuilt from seed on every startup; overrides persist apart.
+db_replace_fiscal_calendar(FISCAL_CALENDAR)
+db_replace_wp_facts(WP_DATA)
+WP_DATA = db_load_wp_facts()
 
 # ── Per-SKU editable settings ──────────────────────────────────────────────────
 EDITABLE_SKU_FIELDS = {"case_pack", "lead_time_weeks", "safety_weeks", "target_wos"}

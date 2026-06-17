@@ -74,7 +74,78 @@ def init_db():
                 value   TEXT NOT NULL
             )
         """)
+        # ── Warehouse (seed source-of-truth) ──────────────────────────────────
+        # wp_facts holds each generated WP row as a JSON payload, indexed by
+        # (hc, channel, week) for real filtering/joins. Lossless round-trip:
+        # json preserves int/float/bool/null/str exactly; rowid preserves order.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS wp_facts (
+                rowid           INTEGER PRIMARY KEY AUTOINCREMENT,
+                hierarchy_code  INTEGER NOT NULL,
+                channel         TEXT    NOT NULL,
+                current_week    INTEGER NOT NULL,
+                payload         TEXT    NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_wp_facts_hc_ch ON wp_facts (hierarchy_code, channel)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS fiscal_calendar (
+                week_code       INTEGER PRIMARY KEY,
+                fiscal_year     INTEGER NOT NULL,
+                fiscal_week     INTEGER NOT NULL,
+                start_date      TEXT    NOT NULL,
+                end_date        TEXT    NOT NULL,
+                fiscal_month    INTEGER NOT NULL,
+                fiscal_quarter  INTEGER NOT NULL
+            )
+        """)
         conn.commit()
+
+
+# ── Warehouse: WP facts seed ────────────────────────────────────────────────────
+
+def db_replace_wp_facts(rows: List[Dict]):
+    """Materialize the generated WP rows into wp_facts (full replace), order preserved."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM wp_facts")
+        conn.executemany(
+            "INSERT INTO wp_facts (hierarchy_code, channel, current_week, payload) VALUES (?, ?, ?, ?)",
+            [(r["hierarchy_code"], r["channel"], r["current_week"], json.dumps(r)) for r in rows],
+        )
+        conn.commit()
+
+
+def db_load_wp_facts() -> List[Dict]:
+    """Reload WP rows from the warehouse in insertion order (exact round-trip)."""
+    with _conn() as conn:
+        rows = conn.execute("SELECT payload FROM wp_facts ORDER BY rowid").fetchall()
+    return [json.loads(r["payload"]) for r in rows]
+
+
+def db_count_wp_facts() -> int:
+    with _conn() as conn:
+        return conn.execute("SELECT COUNT(*) FROM wp_facts").fetchone()[0]
+
+
+def db_replace_fiscal_calendar(rows: List[Dict]):
+    with _conn() as conn:
+        conn.execute("DELETE FROM fiscal_calendar")
+        conn.executemany(
+            """INSERT INTO fiscal_calendar
+               (week_code, fiscal_year, fiscal_week, start_date, end_date, fiscal_month, fiscal_quarter)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [(r["week_code"], r["fiscal_year"], r["fiscal_week"], r["start_date"],
+              r["end_date"], r["fiscal_month"], r["fiscal_quarter"]) for r in rows],
+        )
+        conn.commit()
+
+
+def db_load_fiscal_calendar() -> List[Dict]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM fiscal_calendar ORDER BY week_code"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── Channel Settings CRUD ──────────────────────────────────────────────────────
