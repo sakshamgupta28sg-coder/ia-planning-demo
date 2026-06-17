@@ -1,5 +1,7 @@
 import math as _math
+import os
 import random
+from datetime import date, timedelta
 from typing import Dict, List
 
 random.seed(42)
@@ -58,8 +60,74 @@ WAREHOUSE_SUB_CHANNELS = {
     "Store": "Store_warehouse",
 }
 
-# Fiscal weeks 202601..202652
-FISCAL_WEEKS = [int(f"2026{str(w).zfill(2)}") for w in range(1, 53)]
+# ── Fiscal calendar (real-retail shape, simple 52-week seed) ──────────────────
+# Backbone for date↔week mapping and cross-year week math. Spans 2024–2028.
+# Schema deliberately carries fiscal_month / fiscal_quarter and tolerates a 53rd
+# week so a true 4-5-4 NRF calendar (incl. 53-week years) can be swapped in later
+# WITHOUT a schema change. Seed here is simple: every year = 52 weeks, week 1
+# anchored to the first Monday on/after Jan 1, each week = +7 days, 4-5-4 months.
+FISCAL_CALENDAR_YEARS = [2024, 2025, 2026, 2027, 2028]
+
+
+def _build_fiscal_calendar() -> tuple:
+    """Return (rows, by_code) for FISCAL_CALENDAR_YEARS — simple 52-week seed."""
+    rows: List[Dict] = []
+    by_code: Dict[int, Dict] = {}
+    for fy in FISCAL_CALENDAR_YEARS:
+        jan1 = date(fy, 1, 1)
+        wk1_start = jan1 + timedelta(days=(7 - jan1.weekday()) % 7)  # first Monday on/after Jan 1
+        for w in range(1, 53):  # simple seed = 52; schema tolerates 53
+            start = wk1_start + timedelta(weeks=w - 1)
+            end = start + timedelta(days=6)
+            quarter = (w - 1) // 13 + 1            # 13 weeks per quarter
+            wq = w - (quarter - 1) * 13            # 1..13 within quarter
+            month_in_q = 0 if wq <= 4 else (1 if wq <= 9 else 2)   # 4-5-4
+            row = {
+                "week_code":      int(f"{fy}{str(w).zfill(2)}"),
+                "fiscal_year":    fy,
+                "fiscal_week":    w,
+                "start_date":     start.isoformat(),
+                "end_date":       end.isoformat(),
+                "fiscal_month":   (quarter - 1) * 3 + month_in_q + 1,
+                "fiscal_quarter": quarter,
+            }
+            rows.append(row)
+            by_code[row["week_code"]] = row
+    return rows, by_code
+
+
+FISCAL_CALENDAR, _CAL_BY_CODE = _build_fiscal_calendar()
+
+
+def fiscal_week_for_date(d: date) -> int:
+    """Map a real calendar date → the fiscal week_code whose [start,end] contains it.
+    Falls back to the nearest in-range week_code if the date is off the seeded grid."""
+    iso = d.isoformat()
+    for row in FISCAL_CALENDAR:
+        if row["start_date"] <= iso <= row["end_date"]:
+            return row["week_code"]
+    # Off-grid: clamp to first/last seeded week.
+    if iso < FISCAL_CALENDAR[0]["start_date"]:
+        return FISCAL_CALENDAR[0]["week_code"]
+    return FISCAL_CALENDAR[-1]["week_code"]
+
+
+# Active "now". The engine reads CURRENT_WEEK throughout. It stays pinned to 202620
+# by default so existing behavior is byte-identical; the live clock is opt-in via the
+# IA_LIVE_CLOCK env flag (wired to the UI year selector in a later phase). Resolving it
+# through one function keeps every reader consistent.
+_PINNED_CURRENT_WEEK = 202620
+
+
+def resolve_current_week() -> int:
+    """Pinned 202620 unless IA_LIVE_CLOCK is set, then today's real fiscal week."""
+    if os.getenv("IA_LIVE_CLOCK"):
+        return fiscal_week_for_date(date.today())
+    return _PINNED_CURRENT_WEEK
+
+
+# Fiscal weeks for the active planning year (2026 season).
+FISCAL_WEEKS = [r["week_code"] for r in FISCAL_CALENDAR if r["fiscal_year"] == 2026]
 _SEASON_END_WK = FISCAL_WEEKS[-1]   # last week — planned runout to 0 here is intentional
 _WK_POS = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
 
@@ -139,8 +207,9 @@ SUPPLY_PROFILE = {
 
 CHANNEL_SPLIT = {"Ecom": 0.55, "Indirect": 0.30, "Store": 0.15}
 
-# The fiscal week that is currently in-flight (not yet actualised, but not open for editing)
-CURRENT_WEEK = 202620
+# The fiscal week that is currently in-flight (not yet actualised, but not open for editing).
+# Resolved via the calendar clock (pinned 202620 unless IA_LIVE_CLOCK is set).
+CURRENT_WEEK = resolve_current_week()
 
 
 def _seasonal_curve(week_num: int, peak_week: int) -> float:
@@ -384,7 +453,7 @@ def generate_wp_data() -> List[Dict]:
             wh = WAREHOUSE_SUB_CHANNELS[ch]
             for wk in FISCAL_WEEKS:
                 week_num = wk % 100
-                is_past     = week_num < 20
+                is_past     = wk < CURRENT_WEEK     # clock-derived (== week_num<20 at 202620)
                 is_ongoing  = (wk == CURRENT_WEEK)
                 is_planning = not is_past and not is_ongoing
 
