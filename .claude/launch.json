@@ -2,11 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "frontend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "cwd": "/Users/sakshamgupta/ia-planning-demo/frontend",
-      "port": 3000
+      "name": "dev-frontend",
+      "runtimeExecutable": "./node_modules/.bin/next",
+      "runtimeArgs": ["dev", "-p", "3001"],
+      "port": 3001
     }
   ]
 }

@@ -1103,9 +1103,16 @@ export default function WPPage() {
             <h1 className="text-2xl font-bold text-white">Working Plan</h1>
             {filters.current_week && (
               <span className="text-xs bg-slate-700 border border-slate-600 text-slate-300 px-2.5 py-1 rounded-full">
-                FY2026 · <span className="text-orange-400 font-semibold">Wk {String(filters.current_week).slice(-2)} in-flight</span>
-                {filters.planning_start_week && (
-                  <> · <span className="text-blue-400">Planning Wk {String(filters.planning_start_week).slice(-2)}–52</span></>
+                FY{selectedYear}
+                {selectedYear === Math.floor(filters.current_week / 100) ? (
+                  <>
+                    {" · "}<span className="text-orange-400 font-semibold">Wk {String(filters.current_week).slice(-2)} in-flight</span>
+                    {filters.planning_start_week && (
+                      <> · <span className="text-blue-400">Planning Wk {String(filters.planning_start_week).slice(-2)}–52</span></>
+                    )}
+                  </>
+                ) : (
+                  <> · <span className="text-blue-400">future season · all planning</span></>
                 )}
               </span>
             )}

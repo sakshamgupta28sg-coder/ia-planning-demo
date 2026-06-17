@@ -9,10 +9,10 @@ const CARDS = [
     badge: "WP",
   },
   {
-    href: "/skus",
-    title: "New SKUs",
-    desc: "Add new products into the planning hierarchy with launch weeks, pricing, and cost.",
-    color: "border-amber-500",
+    href: "/master",
+    title: "Master SKU Catalog",
+    desc: "Every SKU (Old + New) with lifecycle dates and attributes. New SKUs borrow Disc% from a tagged Old SKU for their first year.",
+    color: "border-emerald-500",
     badge: "SKU",
   },
 ];
@@ -44,7 +44,7 @@ export default function Home() {
         ))}
       </div>
       <div className="mt-10 text-xs text-slate-600 border-t border-slate-800 pt-4">
-        8 product hierarchies · 3 channels · 52 fiscal weeks · dummy data only
+        10 SKUs (8 Old + 2 New) · 3 channels · fiscal years 2026–2028 · dummy data only
       </div>
     </div>
   );

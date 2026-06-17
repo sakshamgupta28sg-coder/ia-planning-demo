@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import wp, ty_ly, scenario, skus
+from routers import wp, ty_ly, scenario
 
 app = FastAPI(title="IA Planning Demo", version="1.0.0")
 
@@ -14,7 +14,6 @@ app.add_middleware(
 app.include_router(wp.router, prefix="/api")
 app.include_router(ty_ly.router, prefix="/api")
 app.include_router(scenario.router, prefix="/api")
-app.include_router(skus.router, prefix="/api")
 
 
 @app.get("/")
