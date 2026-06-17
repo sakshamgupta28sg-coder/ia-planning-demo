@@ -9,20 +9,6 @@ const CARDS = [
     badge: "WP",
   },
   {
-    href: "/ty-ly",
-    title: "TY vs LY",
-    desc: "Compare This Year actuals against Last Year across units and dollars, by channel and product.",
-    color: "border-emerald-500",
-    badge: "TY/LY",
-  },
-  {
-    href: "/scenario",
-    title: "Scenario Planning",
-    desc: "Model the impact of different markdown depths (% off) across Base, Optimistic, and Pessimistic scenarios.",
-    color: "border-violet-500",
-    badge: "SP",
-  },
-  {
     href: "/skus",
     title: "New SKUs",
     desc: "Add new products into the planning hierarchy with launch weeks, pricing, and cost.",
