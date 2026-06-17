@@ -115,6 +115,8 @@ type Filters = {
   categories: string[];
   current_week?: number;
   planning_start_week?: number;
+  year?: number;
+  selectable_years?: number[];
 };
 type SeasonProgress = {
   actualized_units: number; actualized_dollars: number;
@@ -379,8 +381,7 @@ export default function WPPage() {
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [snapshotName, setSnapshotName] = useState("");
   const [filters, setFilters] = useState<Filters>({ hierarchies: [], channels: [], weeks: [], categories: [] });
-  const [weekFrom, setWeekFrom] = useState<number | null>(null);
-  const [weekTo,   setWeekTo]   = useState<number | null>(null);
+  const [selectedYear, setSelectedYear] = useState<number>(2026);
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [editError, setEditError] = useState("");
@@ -470,8 +471,6 @@ export default function WPPage() {
     // Planning-weeks mode hides PAST actualised weeks but keeps the ongoing/in-flight
     // week visible (read-only) — it's the current position the plan launches from.
     if (planningOnly && r.actualised) return false;
-    if (weekFrom !== null && r.current_week < weekFrom) return false;
-    if (weekTo   !== null && r.current_week > weekTo)   return false;
     // Focus filter: when multiple combos are selected, optionally show just one.
     // View-only — edits/accept/top-down still target the full selection.
     if (detailCombo && `${r.hierarchy_code}_${r.channel}` !== detailCombo) return false;
@@ -479,8 +478,9 @@ export default function WPPage() {
   });
 
   const reloadPortfolioAndSummary = useCallback(async () => {
+    const yp = { year: String(selectedYear) };
     const [s, p, ex, bud, sp] = await Promise.all([
-      fetchWPSummary({}), fetchPortfolio(), fetchExceptions(), fetchBudget(), fetchSeasonProgress(),
+      fetchWPSummary(yp), fetchPortfolio(yp), fetchExceptions(), fetchBudget(yp), fetchSeasonProgress(yp),
     ]);
     setCurrentSummary(s);
     setPortfolio(p);
@@ -489,7 +489,7 @@ export default function WPPage() {
     setSeasonProgress(sp);
     // Re-fetch filtered cards too so edits reflect in the filtered view
     if (isFiltered) {
-      const params: Record<string, string> = {};
+      const params: Record<string, string> = { year: String(selectedYear) };
       if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
       if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
       const [fs, fb, fsp] = await Promise.all([fetchWPSummary(params), fetchBudget(params), fetchSeasonProgress(params)]);
@@ -498,7 +498,7 @@ export default function WPPage() {
       setFilteredSeasonProgress(fsp);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFiltered, effectiveHcsKey, chsKey]);
+  }, [isFiltered, effectiveHcsKey, chsKey, selectedYear]);
 
   // Reload filtered KPI cards whenever selection changes
   const reloadFilteredCards = useCallback(async () => {
@@ -508,7 +508,7 @@ export default function WPPage() {
       setFilteredSeasonProgress(null);
       return;
     }
-    const params: Record<string, string> = {};
+    const params: Record<string, string> = { year: String(selectedYear) };
     if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
     if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
     const [s, bud, fsp] = await Promise.all([fetchWPSummary(params), fetchBudget(params), fetchSeasonProgress(params)]);
@@ -516,7 +516,7 @@ export default function WPPage() {
     setFilteredBudget(bud);
     setFilteredSeasonProgress(fsp);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFiltered, effectiveHcsKey, chsKey]);
+  }, [isFiltered, effectiveHcsKey, chsKey, selectedYear]);
 
   const reloadRows = useCallback(async () => {
     if (!canEdit) { setRows([]); return; }
@@ -524,14 +524,14 @@ export default function WPPage() {
     // Always fetch each product × channel combo individually so rows keep their identity
     const combos = selectedHcs.flatMap((hc) => selectedChannels.map((ch) => ({ hc, ch })));
     const allFetches = await Promise.all(
-      combos.map(({ hc, ch }) => fetchWPByWeek({ hierarchy_code: hc, channel: ch }))
+      combos.map(({ hc, ch }) => fetchWPByWeek({ hierarchy_code: hc, channel: ch, year: String(selectedYear) }))
     );
     const flat = (allFetches.flat() as WPRow[]).sort(
       (a, b) => a.current_week - b.current_week || a.hierarchy_code - b.hierarchy_code || a.channel.localeCompare(b.channel)
     );
     setRows(flat);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canEdit, hcsKey, chsKey]);
+  }, [canEdit, hcsKey, chsKey, selectedYear]);
 
   const reloadSkuSettings = useCallback(async () => {
     const list: SKUSetting[] = await fetchSKUSettings();
@@ -544,14 +544,20 @@ export default function WPPage() {
     setTargetWOSOverridden(Object.fromEntries(list.map((s) => [`${s.hierarchy_code}_${s.channel}`, s.is_overridden])));
   }, []);
 
+  // Year-independent loads (once on mount)
   useEffect(() => {
-    fetchWPSummary({ baseline: "true" }).then(setBaselineSummary);
-    fetchWPFilters().then(setFilters);
     fetchSnapshots().then(setSnapshots);
-    reloadPortfolioAndSummary();
     reloadSkuSettings();
     reloadTargetWOS();
   }, []);
+
+  // Year-dependent loads: refetch filters/baseline/portfolio when the year changes
+  useEffect(() => {
+    fetchWPFilters(selectedYear).then(setFilters);
+    fetchWPSummary({ baseline: "true", year: String(selectedYear) }).then(setBaselineSummary);
+    reloadPortfolioAndSummary();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedYear]);
 
   useEffect(() => { reloadRows(); }, [reloadRows]);
   useEffect(() => { reloadFilteredCards(); }, [reloadFilteredCards]);
@@ -1191,36 +1197,19 @@ export default function WPPage() {
           onChange={setSelectedChannels}
         />
 
-        {/* Week range */}
+        {/* Fiscal year */}
         <div className="flex items-center gap-1.5">
+          <span className="text-xs text-slate-500">Year</span>
           <select
-            value={weekFrom ?? ""}
-            onChange={(e) => setWeekFrom(e.target.value ? Number(e.target.value) : null)}
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(Number(e.target.value))}
             className="bg-slate-800 border border-slate-600 text-xs text-slate-300 rounded px-2 py-1.5 outline-none focus:border-blue-500 cursor-pointer"
+            title="Fiscal year"
           >
-            <option value="">From week</option>
-            {filters.weeks.map((w) => (
-              <option key={w} value={w}>Wk {String(w).slice(-2)}</option>
+            {(filters.selectable_years ?? [2026, 2027, 2028]).map((y) => (
+              <option key={y} value={y}>FY {y}</option>
             ))}
           </select>
-          <span className="text-slate-600 text-xs">–</span>
-          <select
-            value={weekTo ?? ""}
-            onChange={(e) => setWeekTo(e.target.value ? Number(e.target.value) : null)}
-            className="bg-slate-800 border border-slate-600 text-xs text-slate-300 rounded px-2 py-1.5 outline-none focus:border-blue-500 cursor-pointer"
-          >
-            <option value="">To week</option>
-            {filters.weeks.map((w) => (
-              <option key={w} value={w}>Wk {String(w).slice(-2)}</option>
-            ))}
-          </select>
-          {(weekFrom !== null || weekTo !== null) && (
-            <button
-              onClick={() => { setWeekFrom(null); setWeekTo(null); }}
-              className="text-xs text-slate-500 hover:text-red-400 px-1 transition-colors"
-              title="Clear week filter"
-            >✕</button>
-          )}
         </div>
 
         {canEdit && (

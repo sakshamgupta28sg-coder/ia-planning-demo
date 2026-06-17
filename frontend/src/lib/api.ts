@@ -1,4 +1,4 @@
-const BASE = "http://localhost:8000/api";
+const BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api";
 
 export async function fetchWPByWeek(params?: Record<string, string>) {
   const qs = params ? "?" + new URLSearchParams(params).toString() : "";
@@ -12,13 +12,29 @@ export async function fetchWPSummary(params?: Record<string, string>) {
   return res.json();
 }
 
-export async function fetchWPFilters() {
-  const res = await fetch(`${BASE}/wp/filters`);
+export async function fetchWPFilters(year?: number) {
+  const qs = year ? `?year=${year}` : "";
+  const res = await fetch(`${BASE}/wp/filters${qs}`);
   return res.json();
 }
 
-export async function fetchPortfolio() {
-  const res = await fetch(`${BASE}/wp/portfolio`, { cache: "no-store" });
+export async function fetchMasterCatalog() {
+  const res = await fetch(`${BASE}/wp/master-sku`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function setMasterTag(hierarchy_code: number, tagged_to: number | null) {
+  const res = await fetch(`${BASE}/wp/master-sku/${hierarchy_code}/tag`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tagged_to }),
+  });
+  return res.json();
+}
+
+export async function fetchPortfolio(params?: Record<string, string>) {
+  const qs = params ? "?" + new URLSearchParams(params).toString() : "";
+  const res = await fetch(`${BASE}/wp/portfolio${qs}`, { cache: "no-store" });
   return res.json();
 }
 

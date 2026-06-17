@@ -10,6 +10,8 @@ from dummy_data import (
     clear_single_override, accept_recomm_receipts, undo_recomm_receipts, shift_receipts,
     compare_snapshots, get_exceptions_panel,
     get_budget, get_audit_log, get_season_progress,
+    DEFAULT_YEAR, SELECTABLE_YEARS, _year_weeks, get_active_skus,
+    get_master_catalog, set_sku_tag,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -19,16 +21,38 @@ EDITABLE_FIELDS = {"written_sales_units", "written_sales_dollars", "on_order_pla
 
 # ── Filters ───────────────────────────────────────────────────────────────────
 @router.get("/filters")
-def get_filters():
-    planning_start = next((w for w in FISCAL_WEEKS if w > CURRENT_WEEK), None)
+def get_filters(year: int = DEFAULT_YEAR):
+    weeks = _year_weeks(year)
+    planning_start = next((w for w in weeks if w > CURRENT_WEEK), None)
+    active = set(get_active_skus(year))
+    hierarchies = [h for h in HIERARCHIES if h["hierarchy_code"] in active]
     return {
-        "hierarchies": HIERARCHIES,
+        "hierarchies": hierarchies,
         "channels": CHANNELS,
-        "weeks": FISCAL_WEEKS,
+        "weeks": weeks,
         "categories": CATEGORIES,
         "current_week": CURRENT_WEEK,
         "planning_start_week": planning_start,
+        "year": year,
+        "selectable_years": SELECTABLE_YEARS,
     }
+
+
+# ── Master SKU catalog (read-only) ────────────────────────────────────────────
+@router.get("/master-sku")
+def master_sku_catalog():
+    return get_master_catalog()
+
+
+class TagRequest(BaseModel):
+    tagged_to: Optional[int] = None
+
+
+@router.put("/master-sku/{hierarchy_code}/tag")
+def set_master_tag(hierarchy_code: int, body: TagRequest):
+    if not set_sku_tag(hierarchy_code, body.tagged_to):
+        raise HTTPException(404, "SKU not found in master catalog")
+    return {"hierarchy_code": hierarchy_code, "tagged_to": body.tagged_to}
 
 
 # ── By-week aggregation (supports portfolio + filtered view) ──────────────────
@@ -38,8 +62,9 @@ def get_wp_by_week(
     channel: Optional[str] = None,
     week_from: Optional[int] = None,
     week_to: Optional[int] = None,
+    year: int = DEFAULT_YEAR,
 ):
-    rows = get_agg_rows(hierarchy_code, channel)
+    rows = get_agg_rows(hierarchy_code, channel, year=year)
     if week_from:
         rows = [r for r in rows if r["current_week"] >= week_from]
     if week_to:
@@ -148,6 +173,7 @@ def get_wp_summary(
     hierarchy_codes: Optional[str] = None,
     channels: Optional[str] = None,
     baseline: bool = False,
+    year: int = DEFAULT_YEAR,
 ):
     hc_list = [int(x) for x in hierarchy_codes.split(",") if x.strip()] if hierarchy_codes else (
         [hierarchy_code] if hierarchy_code is not None else None
@@ -163,7 +189,8 @@ def get_wp_summary(
              "written_gm_dollar": r["written_gm_dollar"],
              "written_gm_perc": r["written_gm_perc"]}
             for r in WP_DATA
-            if (hc_list is None or r["hierarchy_code"] in hc_list)
+            if int(str(r["current_week"])[:4]) == year
+            and (hc_list is None or r["hierarchy_code"] in hc_list)
             and (ch_list is None or r["channel"] in ch_list)
         ]
     else:
@@ -171,15 +198,15 @@ def get_wp_summary(
             rows = []
             for hc in hc_list:
                 for ch in ch_list:
-                    rows.extend(get_agg_rows(hc, ch))
+                    rows.extend(get_agg_rows(hc, ch, year=year))
         elif hc_list:
             rows = []
             for hc in hc_list:
-                rows.extend(get_agg_rows(hc, None))
+                rows.extend(get_agg_rows(hc, None, year=year))
         elif ch_list:
-            rows = [r for r in get_agg_rows() if r["channel"] in ch_list]
+            rows = [r for r in get_agg_rows(year=year) if r["channel"] in ch_list]
         else:
-            rows = get_agg_rows()
+            rows = get_agg_rows(year=year)
 
     if not rows:
         return {}
@@ -196,8 +223,8 @@ def get_wp_summary(
 
 # ── Portfolio breakdown (per hierarchy) ───────────────────────────────────────
 @router.get("/portfolio")
-def get_portfolio():
-    all_rows = get_agg_rows()
+def get_portfolio(year: int = DEFAULT_YEAR):
+    all_rows = get_agg_rows(year=year)
     per_hc: dict = {}
     for r in all_rows:
         hc = r["hierarchy_code"]
@@ -523,10 +550,11 @@ def get_audit(limit: int = 100, hierarchy_code: Optional[int] = None, field: Opt
 def read_budget(
     hierarchy_codes: Optional[str] = None,
     channels: Optional[str] = None,
+    year: int = DEFAULT_YEAR,
 ):
     hc_list = [int(x) for x in hierarchy_codes.split(",") if x.strip()] if hierarchy_codes else None
     ch_list = [x.strip() for x in channels.split(",") if x.strip()] if channels else None
-    return get_budget(hc_list, ch_list)
+    return get_budget(hc_list, ch_list, year=year)
 
 
 # ── Snapshots ─────────────────────────────────────────────────────────────────
@@ -544,11 +572,12 @@ def snapshot_compare(a: int, b: int):
 
 
 @router.get("/season-progress")
-def season_progress(hierarchy_codes: Optional[str] = None, channels: Optional[str] = None):
+def season_progress(hierarchy_codes: Optional[str] = None, channels: Optional[str] = None,
+                    year: int = DEFAULT_YEAR):
     """Actualized-to-date vs full-year plan — season pace KPI."""
     hc_list = [int(x) for x in hierarchy_codes.split(",") if x.strip()] if hierarchy_codes else None
     ch_list = [x.strip() for x in channels.split(",") if x.strip()] if channels else None
-    return get_season_progress(hc_list, ch_list)
+    return get_season_progress(hc_list, ch_list, year=year)
 
 
 @router.get("/snapshots")

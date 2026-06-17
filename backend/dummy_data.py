@@ -918,6 +918,26 @@ def get_sku_status(hierarchy_code: int, as_of_week: int) -> str:
     return "New" if 0 <= age < 52 else "Old"
 
 
+def get_master_catalog(as_of_week: int = None) -> List[Dict]:
+    """Master SKU catalog with status (Old/New) derived for the given as-of week."""
+    aw = as_of_week or CURRENT_WEEK
+    out = []
+    for r in MASTER_SKU:
+        d = dict(r)
+        d["status"] = get_sku_status(r["hierarchy_code"], aw)
+        out.append(d)
+    return out
+
+
+def set_sku_tag(hierarchy_code: int, tagged_to) -> bool:
+    """Set/clear the New→Old Disc% borrow tag and refresh the in-memory catalog."""
+    global MASTER_SKU, _MASTER_BY_HC
+    ok = db_set_master_tag(hierarchy_code, tagged_to)
+    MASTER_SKU = db_load_master_sku()
+    _MASTER_BY_HC = {r["hierarchy_code"]: r for r in MASTER_SKU}
+    return ok
+
+
 def get_active_skus(fiscal_year: int, as_of_week: int = None) -> List[int]:
     """SKUs whose lifecycle overlaps the given fiscal year (master ⋈ calendar)."""
     yr_first = int(f"{fiscal_year}01")
@@ -2403,13 +2423,13 @@ def get_exceptions_panel() -> List[Dict]:
     return sorted(result, key=lambda x: (severity_order[x["exception_status"]], x["coverage_wks"]))
 
 
-def get_budget(hc_list: List[int] = None, ch_list: List[str] = None) -> Dict:
+def get_budget(hc_list: List[int] = None, ch_list: List[str] = None, year: int = DEFAULT_YEAR) -> Dict:
     """Return OTB receipt budget (ingested per SKU×channel), consumption, and category breakdown."""
     planned_cost = 0.0
     budget = 0.0
     category_costs: Dict[str, float] = {}
     seen_combos: set = set()
-    for r in get_agg_rows():
+    for r in get_agg_rows(year=year):
         if hc_list is not None and r["hierarchy_code"] not in hc_list:
             continue
         if ch_list is not None and r["channel"] not in ch_list:
@@ -2441,9 +2461,9 @@ def get_audit_log(limit: int = 100, hierarchy_code: int = None, field: str = Non
     return db_get_audit_log(limit, hierarchy_code=hierarchy_code, field=field)
 
 
-def get_season_progress(hc_list: List[int] = None, ch_list: List[str] = None) -> Dict:
+def get_season_progress(hc_list: List[int] = None, ch_list: List[str] = None, year: int = DEFAULT_YEAR) -> Dict:
     """Actualized-to-date vs full-year plan — season pace tracking."""
-    all_rows = get_agg_rows()
+    all_rows = get_agg_rows(year=year)
     if hc_list is not None:
         all_rows = [r for r in all_rows if r["hierarchy_code"] in hc_list]
     if ch_list is not None:
