@@ -99,6 +99,25 @@ def init_db():
                 fiscal_quarter  INTEGER NOT NULL
             )
         """)
+        # master_sku: catalog of every SKU (Old + New). Lifecycle dates drive the
+        # active ⋈ calendar filter; tagged_to is the New→Old Disc% borrow tag (set
+        # in-app, persisted here). Descriptive attrs (color/size) are display-only.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS master_sku (
+                hierarchy_code     INTEGER PRIMARY KEY,
+                l1_name            TEXT    NOT NULL,
+                l2_name            TEXT    NOT NULL,
+                sku_code           TEXT,
+                color              TEXT,
+                size               TEXT,
+                air                REAL,
+                auc                REAL,
+                activation_week    INTEGER NOT NULL,
+                deactivation_week  INTEGER NOT NULL,
+                status_seed        TEXT    NOT NULL,
+                tagged_to          INTEGER
+            )
+        """)
         conn.commit()
 
 
@@ -146,6 +165,48 @@ def db_load_fiscal_calendar() -> List[Dict]:
             "SELECT * FROM fiscal_calendar ORDER BY week_code"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Master SKU catalog ──────────────────────────────────────────────────────────
+
+def db_replace_master_sku(rows: List[Dict]):
+    """Seed the master_sku catalog (full replace), preserving any persisted tags."""
+    with _conn() as conn:
+        existing_tags = {
+            r["hierarchy_code"]: r["tagged_to"]
+            for r in conn.execute("SELECT hierarchy_code, tagged_to FROM master_sku").fetchall()
+        }
+        conn.execute("DELETE FROM master_sku")
+        conn.executemany(
+            """INSERT INTO master_sku
+               (hierarchy_code, l1_name, l2_name, sku_code, color, size, air, auc,
+                activation_week, deactivation_week, status_seed, tagged_to)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(r["hierarchy_code"], r["l1_name"], r["l2_name"], r.get("sku_code"),
+              r.get("color"), r.get("size"), r.get("air"), r.get("auc"),
+              r["activation_week"], r["deactivation_week"], r["status_seed"],
+              # keep a tag the user already set across restarts/reseeds
+              existing_tags.get(r["hierarchy_code"], r.get("tagged_to")))
+             for r in rows],
+        )
+        conn.commit()
+
+
+def db_load_master_sku() -> List[Dict]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM master_sku ORDER BY hierarchy_code").fetchall()
+    return [dict(r) for r in rows]
+
+
+def db_set_master_tag(hierarchy_code: int, tagged_to: Optional[int]) -> bool:
+    """Set/clear the New→Old Disc% borrow tag for a SKU."""
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE master_sku SET tagged_to = ? WHERE hierarchy_code = ?",
+            (tagged_to, hierarchy_code),
+        )
+        conn.commit()
+    return cur.rowcount > 0
 
 
 # ── Channel Settings CRUD ──────────────────────────────────────────────────────

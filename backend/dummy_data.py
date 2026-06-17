@@ -793,6 +793,7 @@ from database import (
     db_log_audit, db_get_audit_log,
     db_get_setting, db_set_setting,
     db_replace_wp_facts, db_load_wp_facts, db_replace_fiscal_calendar,
+    db_replace_master_sku, db_load_master_sku, db_set_master_tag,
 )
 
 init_db()  # create tables on first import; no-op if already exist
@@ -805,6 +806,81 @@ init_db()  # create tables on first import; no-op if already exist
 db_replace_fiscal_calendar(FISCAL_CALENDAR)
 db_replace_wp_facts(WP_DATA)
 WP_DATA = db_load_wp_facts()
+
+# ── Master SKU catalog ───────────────────────────────────────────────────────────
+# Descriptive (display-only) attributes for the existing 8 SKUs.
+_SKU_DESCRIPTORS = {
+    10001: ("Blue",   "US 9"),
+    10002: ("White",  "US 10"),
+    10003: ("Black",  "US 8"),
+    10004: ("Tan",    "US 7"),
+    10005: ("Indigo", "32x32"),
+    10006: ("Black",  "M"),
+    10007: ("Grey",   "L"),
+    10008: ("Navy",   "M"),
+}
+
+# Lifecycle anchors. The 8 originals are long-lived "Old" SKUs: activated in FY2024,
+# deactivating far in the future → active in every viewable year (2026/27/28).
+_OLD_ACTIVATION_WK   = 202401
+_OLD_DEACTIVATION_WK = 202852
+
+
+def _build_master_sku_seed() -> List[Dict]:
+    """Seed master_sku for the existing 8 SKUs as long-lived Old products."""
+    rows: List[Dict] = []
+    for h in HIERARCHIES:
+        hc = h["hierarchy_code"]
+        m = HIERARCHY_METRICS[hc]
+        color, size = _SKU_DESCRIPTORS.get(hc, (None, None))
+        rows.append({
+            "hierarchy_code": hc,
+            "l1_name": h["l1_name"],
+            "l2_name": h["l2_name"],
+            "sku_code": h.get("sku_code"),
+            "color": color,
+            "size": size,
+            "air": m["air"],
+            "auc": m["auc"],
+            "activation_week": _OLD_ACTIVATION_WK,
+            "deactivation_week": _OLD_DEACTIVATION_WK,
+            "status_seed": "Old",
+            "tagged_to": None,
+        })
+    return rows
+
+
+db_replace_master_sku(_build_master_sku_seed())
+MASTER_SKU = db_load_master_sku()
+_MASTER_BY_HC = {r["hierarchy_code"]: r for r in MASTER_SKU}
+
+
+_CAL_ORDER = {r["week_code"]: i for i, r in enumerate(FISCAL_CALENDAR)}
+
+
+def get_sku_status(hierarchy_code: int, as_of_week: int) -> str:
+    """Derived Old/New: New within 52 weeks of activation (by viewed time), else Old."""
+    rec = _MASTER_BY_HC.get(hierarchy_code)
+    if not rec:
+        return "Old"
+    act = _CAL_ORDER.get(rec["activation_week"])
+    now = _CAL_ORDER.get(as_of_week)
+    if act is None or now is None:
+        return rec["status_seed"]
+    age = now - act
+    return "New" if 0 <= age < 52 else "Old"
+
+
+def get_active_skus(fiscal_year: int, as_of_week: int = None) -> List[int]:
+    """SKUs whose lifecycle overlaps the given fiscal year (master ⋈ calendar)."""
+    yr_first = int(f"{fiscal_year}01")
+    yr_last = int(f"{fiscal_year}52")
+    def pos(wk):
+        return _CAL_ORDER.get(wk, -1)
+    return [
+        r["hierarchy_code"] for r in MASTER_SKU
+        if pos(r["activation_week"]) <= pos(yr_last) and pos(r["deactivation_week"]) >= pos(yr_first)
+    ]
 
 # ── Per-SKU editable settings ──────────────────────────────────────────────────
 EDITABLE_SKU_FIELDS = {"case_pack", "lead_time_weeks", "safety_weeks", "target_wos"}
