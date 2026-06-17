@@ -1,3 +1,4 @@
+import contextlib
 import math as _math
 import os
 import random
@@ -126,10 +127,40 @@ def resolve_current_week() -> int:
     return _PINNED_CURRENT_WEEK
 
 
-# Fiscal weeks for the active planning year (2026 season).
-FISCAL_WEEKS = [r["week_code"] for r in FISCAL_CALENDAR if r["fiscal_year"] == 2026]
+# Selectable planning years: the current season + the next two (view-only future).
+DEFAULT_YEAR = 2026
+SELECTABLE_YEARS = [2026, 2027, 2028]
+
+
+def _year_weeks(year: int) -> List[int]:
+    return [r["week_code"] for r in FISCAL_CALENDAR if r["fiscal_year"] == year]
+
+
+# Fiscal weeks for the active planning year (2026 season). The engine reads these
+# module-globals throughout; _scoped_year() temporarily repoints them at another
+# year for the duration of a single read so the unchanged engine can compute it.
+FISCAL_WEEKS = _year_weeks(DEFAULT_YEAR)
 _SEASON_END_WK = FISCAL_WEEKS[-1]   # last week — planned runout to 0 here is intentional
 _WK_POS = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
+
+
+@contextlib.contextmanager
+def _scoped_year(year: int):
+    """Temporarily repoint the season globals at `year`, restore on exit.
+
+    Single-user demo → one request at a time, so swapping module globals is safe.
+    Nesting is fine (each level saves/restores what it saw). For DEFAULT_YEAR the
+    swap rebuilds the identical lists → byte-identical to not scoping at all."""
+    global FISCAL_WEEKS, _SEASON_END_WK, _WK_POS
+    saved = (FISCAL_WEEKS, _SEASON_END_WK, _WK_POS)
+    wks = _year_weeks(year)
+    FISCAL_WEEKS = wks
+    _SEASON_END_WK = wks[-1]
+    _WK_POS = {wk: i for i, wk in enumerate(wks)}
+    try:
+        yield
+    finally:
+        FISCAL_WEEKS, _SEASON_END_WK, _WK_POS = saved
 
 
 def _week_offset(wk: int, delta: int):
@@ -774,10 +805,26 @@ def delete_sku(hierarchy_code: int) -> bool:
     return db_delete_new_sku(hierarchy_code)
 
 
-# Pre-generate on import
-WP_DATA = generate_wp_data()
-TY_LY_DATA = generate_ty_ly_data()
-SCENARIO_DATA = generate_scenario_data()
+# ── Pre-generate on import (multi-year, RNG-order-preserving) ─────────────────────
+# Order matters: generate 2026 FIRST, then TY/LY + scenario, so their RNG draws sit
+# at the exact same offset as before multi-year → byte-identical. The view-only
+# future seasons (2027/28) are generated LAST; their RNG is new but only shapes
+# future-year data. Demand indexes are the union across years (week_code keys carry
+# the year, so no collision); 2026 values are preserved from the first pass.
+WP_DATA = generate_wp_data()                       # 2026 season (identical RNG block)
+_fwd_acc = dict(_FORWARD_DEMAND_INDEX)
+_wos_acc = dict(_WOS_DEMAND_INDEX)
+TY_LY_DATA = generate_ty_ly_data()                 # same RNG offset as pre-multi-year
+SCENARIO_DATA = generate_scenario_data()           # same RNG offset as pre-multi-year
+for _yr in SELECTABLE_YEARS:
+    if _yr == DEFAULT_YEAR:
+        continue
+    with _scoped_year(_yr):
+        WP_DATA = WP_DATA + generate_wp_data()      # append future season
+        _fwd_acc.update(_FORWARD_DEMAND_INDEX)
+        _wos_acc.update(_WOS_DEMAND_INDEX)
+_FORWARD_DEMAND_INDEX = _fwd_acc
+_WOS_DEMAND_INDEX = _wos_acc
 
 # ── Override / Snapshot layer ──────────────────────────────────────────────────
 from datetime import datetime
@@ -1220,7 +1267,18 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
 
 
 def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
-                 _overrides_override: Dict = None) -> List[Dict]:
+                 _overrides_override: Dict = None, year: int = DEFAULT_YEAR) -> List[Dict]:
+    """Aggregate one year's WP_DATA by (hc, wk, ch), sum sub_channels, apply overrides.
+
+    Runs the engine under _scoped_year(year) so the chain/recomm passes walk that
+    year's weeks. Defaults to DEFAULT_YEAR (2026) → byte-identical to pre-multi-year.
+    """
+    with _scoped_year(year):
+        return _agg_rows_impl(hc_filter, ch_filter, _overrides_override, year)
+
+
+def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
+                   _overrides_override: Dict = None, year: int = DEFAULT_YEAR) -> List[Dict]:
     """Aggregate WP_DATA by (hc, wk, ch), sum sub_channels, apply overrides.
 
     _overrides_override: if provided, use this dict instead of reading from DB.
@@ -1229,6 +1287,8 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
     buckets: Dict[str, Dict] = {}
 
     for r in WP_DATA:
+        if int(str(r["current_week"])[:4]) != year:   # scope to the viewed fiscal year
+            continue
         if hc_filter and r["hierarchy_code"] != hc_filter:
             continue
         if ch_filter and r["channel"] != ch_filter:
