@@ -2,6 +2,7 @@ import contextlib
 import math as _math
 import os
 import random
+import threading
 from datetime import date, timedelta
 from typing import Dict, List
 
@@ -144,23 +145,33 @@ _SEASON_END_WK = FISCAL_WEEKS[-1]   # last week — planned runout to 0 here is 
 _WK_POS = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
 
 
+# The season globals are process-wide, so the scoped swap MUST be serialized:
+# FastAPI runs sync endpoints in a threadpool and the frontend fires several reads
+# at once — concurrent swaps would corrupt FISCAL_WEEKS/_WK_POS mid-iteration (500s).
+# A re-entrant lock makes scoped sections mutually exclusive (and allows nesting on
+# the same thread, e.g. apply_edit → get_agg_rows). Fine for a single-user demo:
+# requests just queue. The proper long-term fix is to thread `year` through instead.
+_SCOPE_LOCK = threading.RLock()
+
+
 @contextlib.contextmanager
 def _scoped_year(year: int):
     """Temporarily repoint the season globals at `year`, restore on exit.
 
-    Single-user demo → one request at a time, so swapping module globals is safe.
-    Nesting is fine (each level saves/restores what it saw). For DEFAULT_YEAR the
-    swap rebuilds the identical lists → byte-identical to not scoping at all."""
-    global FISCAL_WEEKS, _SEASON_END_WK, _WK_POS
-    saved = (FISCAL_WEEKS, _SEASON_END_WK, _WK_POS)
-    wks = _year_weeks(year)
-    FISCAL_WEEKS = wks
-    _SEASON_END_WK = wks[-1]
-    _WK_POS = {wk: i for i, wk in enumerate(wks)}
-    try:
-        yield
-    finally:
-        FISCAL_WEEKS, _SEASON_END_WK, _WK_POS = saved
+    Holds _SCOPE_LOCK for the whole block so concurrent requests don't race on the
+    shared globals. Nesting on one thread is safe (RLock). For DEFAULT_YEAR the swap
+    rebuilds identical lists → byte-identical to not scoping at all."""
+    with _SCOPE_LOCK:
+        global FISCAL_WEEKS, _SEASON_END_WK, _WK_POS
+        saved = (FISCAL_WEEKS, _SEASON_END_WK, _WK_POS)
+        wks = _year_weeks(year)
+        FISCAL_WEEKS = wks
+        _SEASON_END_WK = wks[-1]
+        _WK_POS = {wk: i for i, wk in enumerate(wks)}
+        try:
+            yield
+        finally:
+            FISCAL_WEEKS, _SEASON_END_WK, _WK_POS = saved
 
 
 def _week_offset(wk: int, delta: int):
