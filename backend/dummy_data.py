@@ -166,6 +166,32 @@ def _dr_perc(week_num: int, peak_week: int) -> float:
     return round(random.uniform(0.25, 0.40), 4)
 
 
+# ACTUAL discount that ran last year (LY) and two years ago (LLY), keyed at
+# (category, hierarchy_code, channel, week_num) — i.e. week × category × SKU × channel.
+# Independent draws (peak-relative shape × noise) so they differ from the TY plan curve.
+# These are the *history* a planner looks back on; populated by _build_history_discounts()
+# during generate_wp_data() and consumed by both WP planning weeks and generate_ty_ly_data().
+_LY_DISC: Dict[tuple, float] = {}
+_LLY_DISC: Dict[tuple, float] = {}
+
+
+def _build_history_discounts() -> tuple:
+    """Seed LY + LLY actual discount per (l1_category, hc, channel, week_num)."""
+    ly: Dict[tuple, float] = {}
+    lly: Dict[tuple, float] = {}
+    for h in HIERARCHIES:
+        hc = h["hierarchy_code"]
+        l1 = h["l1_name"]
+        m = HIERARCHY_METRICS[hc]
+        for ch in CHANNELS:
+            for wk in FISCAL_WEEKS:
+                wn = wk % 100
+                base = _dr_perc(wn, m["peak_week"])
+                ly[(l1, hc, ch, wn)]  = round(min(0.6, max(0.0, base * random.uniform(0.8, 1.2))), 4)
+                lly[(l1, hc, ch, wn)] = round(min(0.6, max(0.0, base * random.uniform(0.8, 1.2))), 4)
+    return ly, lly
+
+
 # Per-SKU setting overrides loaded from DB at startup (field → value).
 # Empty until _load_sku_settings() runs after DB init.
 _SKU_SETTINGS_OVERRIDES: Dict[int, Dict] = {}
@@ -425,6 +451,44 @@ def generate_wp_data() -> List[Dict]:
                     "markdown_dollars":     md_dollars,
                 })
 
+    # ── Pass 1a: planning-week discounts from history ────────────────────────
+    # Unactualised weeks have no real markdown yet. Seed each from last year's ACTUAL
+    # discount for the same week (LY); fall back to LLY; then to this SKU's average
+    # actual discount across TY actualised weeks. Built here (after actual-week draws)
+    # so historical/actualised numbers stay unchanged. Only dollar/disc fields move —
+    # units, receipts and the EOP chain are independent of the discount rate.
+    global _LY_DISC, _LLY_DISC
+    _LY_DISC, _LLY_DISC = _build_history_discounts()
+    for h in HIERARCHIES:
+        hc = h["hierarchy_code"]
+        m  = HIERARCHY_METRICS[hc]
+        air, auc = m["air"], m["auc"]
+        for ch in CHANNELS:
+            stream = [r for r in rows if r["hierarchy_code"] == hc and r["channel"] == ch]
+            actual_drs = [r["written_dr_perc"] for r in stream if r["actualised"]]
+            avg_ty = round(sum(actual_drs) / len(actual_drs), 4) if actual_drs else 0.0
+            for r in stream:
+                if r["actualised"] or r.get("is_ongoing"):
+                    continue
+                wn = r["current_week"] % 100
+                l1 = r["l1_name"]
+                dr = _LY_DISC.get((l1, hc, ch, wn))
+                if dr is None:
+                    dr = _LLY_DISC.get((l1, hc, ch, wn))
+                if dr is None:
+                    dr = avg_ty
+                units = r["written_sales_units"]
+                aur   = round(air * (1 - dr), 2)
+                r["written_dr_perc"]           = dr
+                r["written_aur"]               = aur
+                r["written_sales_dollars"]     = round(aur * units, 2)
+                r["written_discount_dollars"]  = round(units * air * dr, 2)
+                r["written_gm_dollar"]         = round(r["written_sales_dollars"] - r["written_sales_cost"], 2)
+                r["written_gm_perc"]           = round(r["written_gm_dollar"] / r["written_sales_dollars"]
+                                                       if r["written_sales_dollars"] else 0, 4)
+                r["markdown_units"]            = round(units * dr)
+                r["markdown_dollars"]          = round(r["markdown_units"] * air * dr, 2)
+
     # ── Build demand indexes ──────────────────────────────────────────────────
     wk_pos = {wk: i for i, wk in enumerate(FISCAL_WEEKS)}
     _FORWARD_DEMAND_INDEX = {}
@@ -551,9 +615,12 @@ def generate_ty_ly_data() -> List[Dict]:
                 ty_units = round(m["peak_units"] * CHANNEL_SPLIT[ch] * curve * random.uniform(0.9, 1.1))
                 ly_units = round(ty_units * random.uniform(0.85, 1.15))
                 lly_units = round(ly_units * random.uniform(0.82, 1.12))
-                ty_dollars = round(ty_units * m["air"] * (1 - _dr_perc(week_num, m["peak_week"])), 2)
-                ly_dollars = round(ly_units * m["air"] * (1 - _dr_perc(week_num, m["peak_week"])), 2)
-                lly_dollars = round(lly_units * m["air"] * (1 - _dr_perc(week_num, m["peak_week"])), 2)
+                ty_dr  = _dr_perc(week_num, m["peak_week"])
+                ly_dr  = _LY_DISC.get((h["l1_name"], hc, ch, week_num), ty_dr)
+                lly_dr = _LLY_DISC.get((h["l1_name"], hc, ch, week_num), ty_dr)
+                ty_dollars = round(ty_units * m["air"] * (1 - ty_dr), 2)
+                ly_dollars = round(ly_units * m["air"] * (1 - ly_dr), 2)
+                lly_dollars = round(lly_units * m["air"] * (1 - lly_dr), 2)
                 rows.append({
                     "hierarchy_code": hc,
                     "l1_name": h["l1_name"],
@@ -568,6 +635,9 @@ def generate_ty_ly_data() -> List[Dict]:
                     "ty_dollars": ty_dollars,
                     "ly_dollars": ly_dollars,
                     "lly_dollars": lly_dollars,
+                    "ty_dr_perc": ty_dr,
+                    "ly_dr_perc": ly_dr,
+                    "lly_dr_perc": lly_dr,
                     "units_var": ty_units - ly_units,
                     "units_var_perc": round((ty_units - ly_units) / ly_units if ly_units else 0, 4),
                     "dollars_var": round(ty_dollars - ly_dollars, 2),
