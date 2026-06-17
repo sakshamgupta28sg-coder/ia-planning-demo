@@ -1757,21 +1757,29 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             on_order = int(b.get("on_order_placed_total_unit", 0))
             b["recomm_receipt_units"] = max(0, int(sched[i]) - on_order)
 
-    _apply_newsku_disc_borrow(buckets.values())
+    _apply_newsku_disc_borrow(buckets.values(), _active_ovrs)
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
 
 
-def _apply_newsku_disc_borrow(rows) -> None:
+def _apply_newsku_disc_borrow(rows, overrides: Dict = None) -> None:
     """For each New-SKU row inside its New window, override Disc% with the tagged Old
     SKU's discount for the same week × channel and recompute the dollar/GM fields.
 
     A New SKU has no LY/LLY history, so its planning-week Disc% would seed to ~0. While
     it is New (within 52 weeks of activation, by the row's own week), it instead inherits
     the tagged Old SKU's markdown shape; once it becomes Old it keeps its own (no borrow).
-    Disc% doesn't touch units/receipts/EOP, so the inventory chain is unaffected."""
+    Disc% doesn't touch units/receipts/EOP, so the inventory chain is unaffected.
+
+    A planner's OWN Disc% edit wins over the borrow: if the cell has a written_dr_perc
+    override, the borrow is skipped so the edit sticks."""
+    overrides = overrides or {}
     for b in rows:
         hc = b["hierarchy_code"]
         if hc not in NEW_SKU_HCS:
+            continue
+        # Planner edited this cell's Disc% → respect it, don't borrow over it.
+        ovr = overrides.get(_ovr_key(hc, b["current_week"], b["channel"]))
+        if ovr and "written_dr_perc" in ovr:
             continue
         tag = (_MASTER_BY_HC.get(hc) or {}).get("tagged_to")
         if not tag:
