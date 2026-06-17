@@ -428,11 +428,17 @@ def _level_order_schedule(stream, lead_time, cp):
     isP   = [not s.get("actualised") and not s.get("is_ongoing") for s in stream]
     sales = [s.get("written_sales_units", 0) for s in stream]
     ing   = [int(s.get("ingested_receipt_units", 0)) for s in stream]
-    # starting position entering the planning horizon = EOP of the last actual/ongoing week
+    # starting position entering the planning horizon = EOP of the last actual/ongoing week.
+    # A future season has no actual/ongoing week → fall back to the opening BOP of the first
+    # planning week (the calibrated opening inventory), not 0.
     initpos = 0
+    _anchored = False
     for k in range(n):
         if not isP[k]:
             initpos = stream[k]["eop_units"]
+            _anchored = True
+    if not _anchored and n > 0:
+        initpos = stream[0].get("bop_units", 0)
     orderable = [i for i in range(n) if isP[i] and (i + lead_time) < n]
     if not orderable:
         return order
@@ -651,7 +657,14 @@ def generate_wp_data(hierarchies=None) -> List[Dict]:
         cp = m["case_pack"]
         for ch in CHANNELS:
             ongoing = row_lkp.get((hc, ch, CURRENT_WEEK))
-            prev_eop = ongoing["eop_units"] if ongoing else 0
+            if ongoing:
+                prev_eop = ongoing["eop_units"]
+            else:
+                # Future season (no in-flight week in this year): open from the
+                # calibrated opening BOP set in Pass 1, NOT zero — otherwise the whole
+                # year would start dry. (2026 always has an ongoing week → unchanged.)
+                _first = row_lkp.get((hc, ch, FISCAL_WEEKS[0]))
+                prev_eop = _first["bop_units"] if _first else 0
             for wk in FISCAL_WEEKS:
                 r = row_lkp.get((hc, ch, wk))
                 if not r or r.get("actualised") or r.get("is_ongoing"):
