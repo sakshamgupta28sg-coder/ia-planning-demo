@@ -118,6 +118,12 @@ def init_db():
                 tagged_to          INTEGER
             )
         """)
+        # Migration: snapshots gained settings_data (SKU + channel-level settings
+        # captured at save time) after the table first shipped. Add the column to
+        # pre-existing DBs. Default '{}' = an old snapshot with no settings payload.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
+        if "settings_data" not in cols:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN settings_data TEXT NOT NULL DEFAULT '{}'")
         conn.commit()
 
 
@@ -301,6 +307,28 @@ def db_delete_sku_setting(hierarchy_code: int) -> bool:
     return cur.rowcount > 0
 
 
+def db_replace_sku_settings(settings: Dict[int, Dict]):
+    """Atomically replace ALL per-SKU setting overrides — used by snapshot restore."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM sku_settings")
+        conn.executemany(
+            "INSERT INTO sku_settings (hierarchy_code, data) VALUES (?, ?)",
+            [(int(hc), json.dumps(data)) for hc, data in settings.items()],
+        )
+        conn.commit()
+
+
+def db_replace_channel_settings(settings: Dict[str, Dict]):
+    """Atomically replace ALL per-SKU×channel setting overrides — used by snapshot restore."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM channel_settings")
+        conn.executemany(
+            "INSERT INTO channel_settings (key, data) VALUES (?, ?)",
+            [(key, json.dumps(data)) for key, data in settings.items()],
+        )
+        conn.commit()
+
+
 # ── Override CRUD ─────────────────────────────────────────────────────────────
 
 def db_get_overrides() -> Dict[str, Dict]:
@@ -372,8 +400,8 @@ def db_get_snapshot(snap_id: int) -> Optional[Dict]:
     """Return a single snapshot including its full overrides blob (for restore)."""
     with _conn() as conn:
         row = conn.execute(
-            "SELECT id, name, created_at, overrides_count, overrides_data, summary_data "
-            "FROM snapshots WHERE id = ?",
+            "SELECT id, name, created_at, overrides_count, overrides_data, summary_data, "
+            "settings_data FROM snapshots WHERE id = ?",
             (snap_id,),
         ).fetchone()
     if not row:
@@ -385,19 +413,25 @@ def db_get_snapshot(snap_id: int) -> Optional[Dict]:
         "overrides_count": row["overrides_count"],
         "overrides":       json.loads(row["overrides_data"]),
         "summary":         json.loads(row["summary_data"]),
+        "settings":        json.loads(row["settings_data"] or "{}"),
     }
 
 
 def db_insert_snapshot(name: str, created_at: str, overrides_count: int,
-                       overrides: Dict, summary: Dict) -> Dict:
-    """Insert snapshot row, return the new record (id from AUTOINCREMENT)."""
+                       overrides: Dict, summary: Dict, settings: Dict = None) -> Dict:
+    """Insert snapshot row, return the new record (id from AUTOINCREMENT).
+
+    `settings` captures SKU + channel-level setting overrides (lead_time, case_pack,
+    safety_weeks, target_wos) live at save time, so restore returns the full plan
+    state — not just cell overrides.
+    """
     with _conn() as conn:
         cur = conn.execute(
             "INSERT INTO snapshots "
-            "(name, created_at, overrides_count, overrides_data, summary_data) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(name, created_at, overrides_count, overrides_data, summary_data, settings_data) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (name, created_at, overrides_count,
-             json.dumps(overrides), json.dumps(summary)),
+             json.dumps(overrides), json.dumps(summary), json.dumps(settings or {})),
         )
         snap_id = cur.lastrowid
         conn.commit()

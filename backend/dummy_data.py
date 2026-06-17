@@ -907,8 +907,8 @@ from database import (
     db_get_overrides, db_upsert_override, db_clear_overrides, db_replace_overrides,
     db_batch_upsert_overrides,
     db_list_snapshots, db_get_snapshot, db_insert_snapshot, db_delete_snapshot, db_rename_snapshot,
-    db_get_all_sku_settings, db_upsert_sku_setting,
-    db_get_all_channel_settings, db_upsert_channel_setting,
+    db_get_all_sku_settings, db_upsert_sku_setting, db_replace_sku_settings,
+    db_get_all_channel_settings, db_upsert_channel_setting, db_replace_channel_settings,
     db_get_all_new_skus, db_get_max_new_sku_hc, db_insert_new_sku, db_delete_new_sku,
     db_delete_override,
     db_log_audit, db_get_audit_log,
@@ -1868,13 +1868,34 @@ def reset_overrides():
 
 
 def restore_snapshot(snap_id: int) -> bool:
+    global _SKU_SETTINGS_OVERRIDES, _CHANNEL_TARGET_WOS
     snap = db_get_snapshot(snap_id)
     if not snap:
         return False
     db_replace_overrides(snap["overrides"])
-    # Rebuild demand + pipeline indexes so recomm reflects snapshot's sales/OO state.
-    # Without this, _FORWARD_DEMAND_INDEX/_PIPELINE_INDEX stay stale until server restart.
-    _rebuild_fwd_demand_and_recomm([h["hierarchy_code"] for h in HIERARCHIES])
+
+    # Restore the captured plan settings too (lead_time/case_pack/safety_weeks/
+    # target_wos + channel target WOS). Old snapshots have no settings payload → {}
+    # which correctly restores to base-metric defaults (no overrides).
+    settings = snap.get("settings") or {}
+    sku_settings = {int(hc): dict(v) for hc, v in settings.get("sku", {}).items()}
+    chan_settings = {k: int(v) for k, v in settings.get("channel", {}).items()}
+    # Mutate in place (clear + update), do NOT rebind — routers import these dicts by
+    # reference (from dummy_data import _CHANNEL_TARGET_WOS), so rebinding would leave
+    # them pointing at the stale pre-restore object.
+    _SKU_SETTINGS_OVERRIDES.clear(); _SKU_SETTINGS_OVERRIDES.update(sku_settings)
+    _CHANNEL_TARGET_WOS.clear();     _CHANNEL_TARGET_WOS.update(chan_settings)
+    db_replace_sku_settings(sku_settings)
+    # channel_settings DB form is {"target_wos": N}; in-memory form is the bare int.
+    db_replace_channel_settings({k: {"target_wos": v} for k, v in chan_settings.items()})
+
+    # Rebuild demand + pipeline indexes so recomm reflects snapshot's sales/OO state,
+    # and re-derive each SKU's plan from the restored settings (lead_time/case_pack
+    # change look-ahead, locks and rounding). Without this they stay stale until restart.
+    all_hcs = [h["hierarchy_code"] for h in HIERARCHIES]
+    for hc in all_hcs:
+        recompute_recomm_for_sku(hc)
+    _rebuild_fwd_demand_and_recomm(all_hcs)
     return True
 
 
@@ -1898,12 +1919,20 @@ def save_snapshot(name: str) -> Dict:
         # Dollar-weighted GM% — not simple average (P-03)
         "avg_gm_perc":         round(tg / td, 4) if td > 0 else 0,
     }
+    # Capture the full plan state, not just cell overrides: SKU-level settings
+    # (lead_time/case_pack/safety_weeks/target_wos) and channel-level target WOS
+    # overrides live at save time, so restore returns the exact plan the planner saw.
+    settings = {
+        "sku":     {str(hc): dict(v) for hc, v in _SKU_SETTINGS_OVERRIDES.items()},
+        "channel": {k: int(v) for k, v in _CHANNEL_TARGET_WOS.items()},
+    }
     return db_insert_snapshot(
         name=name,
         created_at=datetime.now().isoformat(),
         overrides_count=len(overrides),
         overrides={k: dict(v) for k, v in overrides.items()},
         summary=summary,
+        settings=settings,
     )
 
 
@@ -2108,18 +2137,26 @@ def _reset_fwd_demand_and_recomm():
 
 
 def clear_single_override(hc: int, wk: int, ch: str) -> Dict:
-    """Remove override for one cell. Rebuilds indexes if demand/OO changed. Returns fresh row."""
-    key = _ovr_key(hc, wk, ch)
-    overrides = db_get_overrides()
-    if key in overrides:
-        last_edited = overrides[key].get("_last_edited")
-        db_delete_override(key)
-        if last_edited in ("written_sales_units", "written_sales_dollars", "written_dr_perc"):
-            _rebuild_fwd_demand_and_recomm([hc], [ch])
-        elif last_edited == "on_order_placed_total_unit":
-            _rebuild_pipeline_and_recomm([hc], [ch])
-    rows = get_agg_rows(hc, ch)
-    return next((r for r in rows if r["current_week"] == wk), {})
+    """Remove override for one cell. Rebuilds indexes if demand/OO changed. Returns fresh row.
+
+    The fiscal year is encoded in the week code (202730 → 2027). Scope the index
+    rebuild (walks FISCAL_WEEKS) and the re-read to that year so reset works in any
+    viewed year — without it the rebuild touched 2026 and the re-read missed the row
+    (404). For 2026 this is identical to not scoping.
+    """
+    year = wk // 100
+    with _scoped_year(year):
+        key = _ovr_key(hc, wk, ch)
+        overrides = db_get_overrides()
+        if key in overrides:
+            last_edited = overrides[key].get("_last_edited")
+            db_delete_override(key)
+            if last_edited in ("written_sales_units", "written_sales_dollars", "written_dr_perc"):
+                _rebuild_fwd_demand_and_recomm([hc], [ch])
+            elif last_edited == "on_order_placed_total_unit":
+                _rebuild_pipeline_and_recomm([hc], [ch])
+        rows = get_agg_rows(hc, ch, year=year)
+        return next((r for r in rows if r["current_week"] == wk), {})
 
 
 def shift_receipts(hcs: List[int], channels: List[str], shift_weeks: int, year: int = DEFAULT_YEAR) -> Dict:
