@@ -209,6 +209,45 @@ def db_set_master_tag(hierarchy_code: int, tagged_to: Optional[int]) -> bool:
     return cur.rowcount > 0
 
 
+# ── Placeholders (what-if clones) ────────────────────────────────────────────────
+
+def db_init_placeholders():
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS placeholders (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT    NOT NULL,
+                source_hc   INTEGER NOT NULL,
+                created_at  TEXT    NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+def db_list_placeholders() -> List[Dict]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM placeholders ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def db_insert_placeholder(name: str, source_hc: int, created_at: str) -> Dict:
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO placeholders (name, source_hc, created_at) VALUES (?, ?, ?)",
+            (name, source_hc, created_at),
+        )
+        conn.commit()
+        pid = cur.lastrowid
+    return {"id": pid, "name": name, "source_hc": source_hc, "created_at": created_at}
+
+
+def db_delete_placeholder(pid: int) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM placeholders WHERE id = ?", (pid,))
+        conn.commit()
+    return cur.rowcount > 0
+
+
 # ── Channel Settings CRUD ──────────────────────────────────────────────────────
 
 def db_get_all_channel_settings() -> Dict[str, Dict]:

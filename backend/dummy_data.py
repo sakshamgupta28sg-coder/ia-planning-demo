@@ -891,9 +891,11 @@ from database import (
     db_get_setting, db_set_setting,
     db_replace_wp_facts, db_load_wp_facts, db_replace_fiscal_calendar,
     db_replace_master_sku, db_load_master_sku, db_set_master_tag,
+    db_init_placeholders, db_list_placeholders, db_insert_placeholder, db_delete_placeholder,
 )
 
 init_db()  # create tables on first import; no-op if already exist
+db_init_placeholders()
 
 # ── Materialize seed into the SQLite "warehouse", then run the engine off it ──────
 # The generated rows + fiscal calendar are written to DB tables (source of truth,
@@ -994,6 +996,30 @@ def set_sku_tag(hierarchy_code: int, tagged_to) -> bool:
     MASTER_SKU = db_load_master_sku()
     _MASTER_BY_HC = {r["hierarchy_code"]: r for r in MASTER_SKU}
     return ok
+
+
+# ── Placeholders (what-if clones of an Old SKU) ───────────────────────────────────
+def get_placeholders() -> List[Dict]:
+    return db_list_placeholders()
+
+
+def add_placeholder(name: str, source_hc: int) -> Dict:
+    from datetime import datetime
+    return db_insert_placeholder(name, source_hc, datetime.utcnow().isoformat())
+
+
+def delete_placeholder(pid: int) -> bool:
+    return db_delete_placeholder(pid)
+
+
+def get_placeholder_plan(pid: int, channel: str = None, year: int = DEFAULT_YEAR):
+    """Clone of the source SKU's UNACTUALISED (planning) rows — a forward what-if.
+    Placeholders never touch the real engine state; this is a read-only projection."""
+    ph = next((p for p in db_list_placeholders() if p["id"] == pid), None)
+    if not ph:
+        return None
+    rows = get_agg_rows(ph["source_hc"], channel, year=year)
+    return [r for r in rows if not r.get("actualised") and not r.get("is_ongoing")]
 
 
 def get_active_skus(fiscal_year: int, as_of_week: int = None) -> List[int]:

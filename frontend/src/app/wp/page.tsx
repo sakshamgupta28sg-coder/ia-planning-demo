@@ -9,6 +9,7 @@ import {
   compareSnapshots, fetchExceptions, fetchAuditLog, fetchBudget,
   fetchSeasonProgress, renameSnapshotAPI,
 } from "@/lib/api";
+import PlaceholdersPanel from "./PlaceholdersPanel";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
@@ -2440,6 +2441,10 @@ export default function WPPage() {
           </div>
         </>
       )}
+
+      <div className="mt-6">
+        <PlaceholdersPanel year={selectedYear} />
+      </div>
     </div>
   );
 }

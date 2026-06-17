@@ -32,6 +32,31 @@ export async function setMasterTag(hierarchy_code: number, tagged_to: number | n
   return res.json();
 }
 
+export async function fetchPlaceholders() {
+  const res = await fetch(`${BASE}/wp/placeholders`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function createPlaceholder(name: string, source_hc: number) {
+  const res = await fetch(`${BASE}/wp/placeholders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, source_hc }),
+  });
+  return res.json();
+}
+
+export async function deletePlaceholder(pid: number) {
+  const res = await fetch(`${BASE}/wp/placeholders/${pid}`, { method: "DELETE" });
+  return res.json();
+}
+
+export async function fetchPlaceholderPlan(pid: number, params?: Record<string, string>) {
+  const qs = params ? "?" + new URLSearchParams(params).toString() : "";
+  const res = await fetch(`${BASE}/wp/placeholders/${pid}/plan${qs}`, { cache: "no-store" });
+  return res.json();
+}
+
 export async function fetchPortfolio(params?: Record<string, string>) {
   const qs = params ? "?" + new URLSearchParams(params).toString() : "";
   const res = await fetch(`${BASE}/wp/portfolio${qs}`, { cache: "no-store" });

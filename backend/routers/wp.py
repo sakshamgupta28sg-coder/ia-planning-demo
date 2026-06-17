@@ -12,6 +12,7 @@ from dummy_data import (
     get_budget, get_audit_log, get_season_progress,
     DEFAULT_YEAR, SELECTABLE_YEARS, _year_weeks, get_active_skus,
     get_master_catalog, set_sku_tag,
+    get_placeholders, add_placeholder, delete_placeholder, get_placeholder_plan,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -53,6 +54,39 @@ def set_master_tag(hierarchy_code: int, body: TagRequest):
     if not set_sku_tag(hierarchy_code, body.tagged_to):
         raise HTTPException(404, "SKU not found in master catalog")
     return {"hierarchy_code": hierarchy_code, "tagged_to": body.tagged_to}
+
+
+# ── Placeholders (what-if clones) ─────────────────────────────────────────────
+class PlaceholderRequest(BaseModel):
+    name: str
+    source_hc: int
+
+
+@router.get("/placeholders")
+def list_placeholders():
+    return get_placeholders()
+
+
+@router.post("/placeholders")
+def create_placeholder(body: PlaceholderRequest):
+    if not body.name.strip():
+        raise HTTPException(400, "name required")
+    return add_placeholder(body.name.strip(), body.source_hc)
+
+
+@router.delete("/placeholders/{pid}")
+def remove_placeholder(pid: int):
+    if not delete_placeholder(pid):
+        raise HTTPException(404, "Placeholder not found")
+    return {"deleted": pid}
+
+
+@router.get("/placeholders/{pid}/plan")
+def placeholder_plan(pid: int, channel: Optional[str] = None, year: int = DEFAULT_YEAR):
+    rows = get_placeholder_plan(pid, channel, year)
+    if rows is None:
+        raise HTTPException(404, "Placeholder not found")
+    return rows
 
 
 # ── By-week aggregation (supports portfolio + filtered view) ──────────────────
