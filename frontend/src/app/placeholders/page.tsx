@@ -2,9 +2,10 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
   fetchPlaceholders, createPlaceholder, deletePlaceholder, fetchMasterCatalog,
-  fetchWPByWeek, fetchWPFilters, editWPRow, undoRowOverride, acceptRecomm,
+  fetchWPByWeek, fetchWPFilters, editWPRow, undoRowOverride, acceptRecomm, undoRecomm,
   fetchSKUSettings, updateSKUSetting, resetSKUSettings,
   fetchTargetWOS, updateTargetWOS, resetTargetWOS,
+  topDownDistribute, undoTopDown,
 } from "@/lib/api";
 
 // ── Types ───────────────────────────────────────────────────────────────────────
@@ -54,22 +55,22 @@ function EditableNumber({ value, onCommit, isModified, isInteger = true, locked 
   );
 }
 
-function EditablePercent({ value, onCommit, isModified, locked = false }:
-  { value: number; onCommit: (v: number) => void; isModified?: boolean; locked?: boolean }) {
+function EditablePercent({ value, onCommit, isModified, locked = false, mode }:
+  { value: number; onCommit: (v: number, mode: string) => void; isModified?: boolean; locked?: boolean; mode: string }) {
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
   if (locked) return <span className="text-slate-600 select-none" title="Locked — week not editable">{pct(value)}<span className="ml-0.5 text-[9px]">🔒</span></span>;
   function startEdit() { setInputVal((value * 100).toFixed(1)); setEditing(true); }
-  function commit() { setEditing(false); const num = parseFloat(inputVal); if (!isNaN(num) && num >= 0 && num <= 100 && num / 100 !== value) onCommit(num / 100); }
+  function commit() { setEditing(false); const num = parseFloat(inputVal); if (!isNaN(num) && num >= 0 && num <= 100 && num / 100 !== value) onCommit(num / 100, mode); }
   if (editing) return (
     <input ref={inputRef} type="number" value={inputVal} min={0} max={100} step={0.1} onChange={(e) => setInputVal(e.target.value)} onBlur={commit}
       onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
       className="w-16 bg-slate-900 text-white text-right px-1 py-0 text-xs border border-blue-400 rounded outline-none" />
   );
   return (
-    <span onClick={startEdit} title="Disc% — click to edit (holds units, $ recalcs)"
+    <span onClick={startEdit} title={`Disc% — click to edit\nMode: ${mode === "hold_units" ? "Hold Units ($ recalcs)" : "Hold $ (Units back-calc)"}`}
       className={`cursor-pointer rounded px-1 py-0.5 hover:bg-slate-600 transition-colors select-none ${isModified ? "text-amber-300 font-semibold" : "text-blue-300"}`}>
       {pct(value)}<span className="ml-0.5 text-slate-500 text-[9px]">✎</span>
     </span>
@@ -105,6 +106,9 @@ export default function PlaceholdersPage() {
   const [targetWos, setTargetWos] = useState<number | null>(null);
   const [targetWosOverridden, setTargetWosOverridden] = useState(false);
   const [planningOnly, setPlanningOnly] = useState(false);
+  const [discPctMode, setDiscPctMode] = useState<"hold_units" | "hold_dollars">("hold_units");
+  const [tdTarget, setTdTarget] = useState("");
+  const [tdField, setTdField] = useState<"written_sales_units" | "written_sales_dollars">("written_sales_units");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
@@ -200,6 +204,17 @@ export default function PlaceholdersPage() {
     finally { setBusy(false); }
   }
 
+  async function onUndoRecomm() {
+    if (!selected || !channel) return;
+    setBusy(true); setErr("");
+    try {
+      const res = await undoRecomm({ hierarchy_codes: [selected.placeholder_hc], channels: [channel], year });
+      await reloadRows();
+      flash(`Undid accepted receipts — ${res.cleared ?? 0} weeks`);
+    } catch (e) { const m = e instanceof Error ? e.message : "Undo failed"; setErr(m); flash(m); }
+    finally { setBusy(false); }
+  }
+
   async function onSettingEdit(field: string, value: number) {
     if (!selected) return;
     setErr("");
@@ -230,8 +245,58 @@ export default function PlaceholdersPage() {
     flash("Target WOS reset");
   }
 
+  async function onTopDown() {
+    if (!selected || !channel) return;
+    const target = parseFloat(tdTarget);
+    if (isNaN(target) || target <= 0) { flash("Enter a target > 0"); return; }
+    setBusy(true); setErr("");
+    try {
+      await topDownDistribute({ hierarchy_codes: [selected.placeholder_hc], channels: [channel], target, field: tdField, year });
+      await reloadRows();
+      flash("Target distributed across planning weeks");
+    } catch (e) { const m = e instanceof Error ? e.message : "Distribute failed"; setErr(m); flash(m); }
+    finally { setBusy(false); }
+  }
+
+  async function onUndoTopDown() {
+    if (!selected || !channel) return;
+    setBusy(true); setErr("");
+    try {
+      await undoTopDown({ hierarchy_codes: [selected.placeholder_hc], channels: [channel], year });
+      await reloadRows();
+      flash("Reverted distribution");
+    } catch (e) { const m = e instanceof Error ? e.message : "Undo failed"; setErr(m); flash(m); }
+    finally { setBusy(false); }
+  }
+
   const displayRows = rows.filter((r) => !(planningOnly && r.actualised));
   const lt = setting?.lead_time_weeks ?? 12;
+
+  // Summary metrics for the selected placeholder, scoped to the active filters
+  // (year + channel — the rows already reflect them). GM% and avg disc% are
+  // dollar-weighted (not naive averages). Total cost = revenue − GM (COGS).
+  const totals = rows.reduce(
+    (a, r) => {
+      a.revenue += r.written_sales_dollars;
+      a.discount += r.written_discount_dollars;
+      a.units += r.written_sales_units;
+      a.gm += r.written_gm_dollar;
+      a.gross += r.written_sales_dollars + r.written_discount_dollars; // units × AIR
+      return a;
+    },
+    { revenue: 0, discount: 0, units: 0, gm: 0, gross: 0 },
+  );
+  const totalCost = totals.revenue - totals.gm;
+  const gmPerc = totals.revenue > 0 ? totals.gm / totals.revenue : 0;
+  const avgDiscPerc = totals.gross > 0 ? totals.discount / totals.gross : 0;
+  const cards: { label: string; val: string }[] = [
+    { label: "Total Revenue", val: fmtD(totals.revenue) },
+    { label: "Total Cost", val: fmtD(totalCost) },
+    { label: "GM $", val: `${fmtD(totals.gm)} · ${pct(gmPerc)}` },
+    { label: "Total Units", val: fmtU(totals.units) },
+    { label: "Total Discount $", val: fmtD(totals.discount) },
+    { label: "Avg Disc %", val: pct(avgDiscPerc) },
+  ];
 
   return (
     <div className="max-w-7xl mx-auto pb-16">
@@ -304,10 +369,57 @@ export default function PlaceholdersPage() {
               className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white text-xs font-medium px-3 py-1.5 rounded">
               ✓ Accept Recomm
             </button>
+            <button onClick={onUndoRecomm} disabled={busy}
+              className="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 text-xs font-medium px-3 py-1.5 rounded">
+              ↩ Undo Accepted
+            </button>
             <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
               <input type="checkbox" checked={planningOnly} onChange={(e) => setPlanningOnly(e.target.checked)} />
               Planning weeks only
             </label>
+            {/* Disc% edit mode — applies to per-cell Disc% edits */}
+            <div className="flex items-center gap-1 text-xs text-slate-400">
+              <span>Disc% edit:</span>
+              <div className="flex rounded overflow-hidden border border-slate-600">
+                {(["hold_units", "hold_dollars"] as const).map((m) => (
+                  <button key={m} onClick={() => setDiscPctMode(m)}
+                    className={`px-2 py-1 ${discPctMode === m ? "bg-blue-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}>
+                    {m === "hold_units" ? "Hold Units" : "Hold $"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Target split (top-down distribute by units or $) ── */}
+          <div className="flex flex-wrap items-end gap-2 mb-3 bg-slate-800 rounded-xl p-3">
+            <span className="text-xs text-slate-400 font-medium self-center">Target split:</span>
+            <select value={tdField} onChange={(e) => setTdField(e.target.value as typeof tdField)}
+              className="bg-slate-700 border border-slate-600 text-xs text-slate-200 rounded px-2 py-1.5">
+              <option value="written_sales_units">Units</option>
+              <option value="written_sales_dollars">Dollars</option>
+            </select>
+            <input value={tdTarget} onChange={(e) => setTdTarget(e.target.value)} type="number" placeholder="total target"
+              className="bg-slate-700 border border-slate-600 text-xs text-slate-200 rounded px-2 py-1.5 w-36" />
+            <button onClick={onTopDown} disabled={busy}
+              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-medium px-3 py-1.5 rounded">
+              Distribute across weeks
+            </button>
+            <button onClick={onUndoTopDown} disabled={busy}
+              className="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 text-xs font-medium px-3 py-1.5 rounded">
+              ↩ Undo split
+            </button>
+            <span className="text-[10px] text-slate-500 self-center">spreads the total across this channel&apos;s planning weeks by seasonal weight</span>
+          </div>
+
+          {/* ── Summary cards (respond to year + channel filters) ── */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+            {cards.map((c) => (
+              <div key={c.label} className="bg-slate-800 rounded-xl px-3 py-2.5">
+                <div className="text-[10px] text-slate-400 mb-1">{c.label}</div>
+                <div className="text-sm font-semibold text-slate-100">{c.val}</div>
+              </div>
+            ))}
           </div>
 
           {/* ── SKU settings ── */}
@@ -371,8 +483,8 @@ export default function PlaceholdersPage() {
                       </td>
                       <td className="px-3 py-1.5 text-right text-slate-400">{r.written_air.toFixed(2)}</td>
                       <td className="px-3 py-1.5 text-right">
-                        <EditablePercent value={r.written_dr_perc} isModified={r._modified} locked={locked}
-                          onCommit={(v) => onEdit(r.current_week, "written_dr_perc", v, "hold_units")} />
+                        <EditablePercent value={r.written_dr_perc} isModified={r._modified} locked={locked} mode={discPctMode}
+                          onCommit={(v, mode) => onEdit(r.current_week, "written_dr_perc", v, mode)} />
                       </td>
                       <td className="px-3 py-1.5 text-right text-orange-300">{fmtD(r.written_discount_dollars)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-300">{r.written_aur.toFixed(2)}</td>
