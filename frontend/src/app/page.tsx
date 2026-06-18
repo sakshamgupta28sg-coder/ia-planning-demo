@@ -15,6 +15,13 @@ const CARDS = [
     color: "border-emerald-500",
     badge: "SKU",
   },
+  {
+    href: "/placeholders",
+    title: "Placeholders",
+    desc: "What-if SKUs cloned from an Old SKU across all years, then edited like the Working Plan. Independent of the source and excluded from the live portfolio.",
+    color: "border-amber-500",
+    badge: "WHATIF",
+  },
 ];
 
 export default function Home() {
