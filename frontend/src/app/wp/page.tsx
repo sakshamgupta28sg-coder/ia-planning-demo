@@ -691,7 +691,15 @@ export default function WPPage() {
       confirmLabel: "Restore",
       onConfirm: async () => {
         await restoreSnapshotAPI(id);
-        await Promise.all([reloadRows(), reloadPortfolioAndSummary()]);
+        // A snapshot now also restores SKU + channel settings (lead_time/case_pack/
+        // safety_weeks/target_wos), so refresh those panels too — not just the rows —
+        // otherwise the settings inputs keep showing the pre-restore values.
+        await Promise.all([
+          reloadSkuSettings(),
+          reloadTargetWOS(),
+          reloadRows(),
+          reloadPortfolioAndSummary(),
+        ]);
         setShowSnapshots(false);
       },
     });
