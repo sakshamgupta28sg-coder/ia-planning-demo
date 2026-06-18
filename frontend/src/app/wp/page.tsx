@@ -106,7 +106,7 @@ type SnapCompare = {
     a_receipts: number; b_receipts: number; delta_receipts: number;
   }[];
 };
-type Summary = { total_written_sales_units: number; total_written_sales_dollars: number; total_written_gm_dollar: number; avg_written_gm_perc: number };
+type Summary = { total_written_sales_units: number; total_written_sales_dollars: number; total_written_gm_dollar: number; avg_written_gm_perc: number; total_written_discount_dollars?: number; total_written_cost?: number; avg_written_disc_perc?: number };
 type Snapshot = { id: number; name: string; created_at: string; overrides_count: number; summary: { total_sales_units: number; total_sales_dollars: number; total_gm_dollar: number; avg_gm_perc: number } };
 type Filters = {
   hierarchies: { hierarchy_code: number; l1_name: string; l2_name: string; sku_code: string }[];
@@ -1266,6 +1266,9 @@ export default function WPPage() {
               label: isFiltered ? "Selection Units" : "Portfolio Units", val: fmtU(s.total_written_sales_units),
               delta: !isFiltered && baselineSummary ? <Delta current={s.total_written_sales_units} baseline={baselineSummary.total_written_sales_units} /> : null,
             },
+            { label: "Total Cost", val: fmtD(s.total_written_cost ?? 0), delta: null },
+            { label: "Total Discount $", val: fmtD(s.total_written_discount_dollars ?? 0), delta: null },
+            { label: "Avg Disc %", val: pct(s.avg_written_disc_perc ?? 0), delta: null },
           ].map((k) => (
             <div key={k.label} className={`rounded-lg p-4 border ${hasEdits ? "bg-slate-800 border-amber-900/50" : "bg-slate-800 border-slate-700"}`}>
               <div className="text-xs text-slate-400 mb-1">{k.label}</div>
