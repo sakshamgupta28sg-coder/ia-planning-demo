@@ -1022,28 +1022,114 @@ def set_sku_tag(hierarchy_code: int, tagged_to) -> bool:
     return ok
 
 
-# ── Placeholders (what-if clones of an Old SKU) ───────────────────────────────────
+# ── Placeholders (full editable what-if SKUs cloned from an Old SKU) ──────────────
+# A placeholder is MATERIALIZED as a hidden synthetic SKU: on create we deep-clone the
+# source Old SKU's base rows across ALL years into a new hierarchy_code (PLACEHOLDER_HC_BASE
+# + registry id) and mirror its index entries, so the placeholder behaves identically to
+# the source until edited. From then on every WP action (row edits, Accept Recomm,
+# top-down, shift, SKU settings, target WOS, snapshots) works on it for free — edits are
+# keyed by the placeholder's hc, fully independent of the source. The placeholder hcs are
+# tracked in PLACEHOLDER_HCS and EXCLUDED from every main-app view (portfolio, exceptions,
+# filters, master catalog); they surface only on the dedicated placeholders page.
+PLACEHOLDER_HC_BASE = 90000
+PLACEHOLDER_HCS: set = set()
+
+# Index dicts mirrored when a placeholder is materialized (keyed (hc, channel, week)).
+_PLACEHOLDER_INDEXES = (_FORWARD_DEMAND_INDEX, _WOS_DEMAND_INDEX, _PIPELINE_INDEX)
+
+
+def _placeholder_hc(pid: int) -> int:
+    return PLACEHOLDER_HC_BASE + int(pid)
+
+
+def _materialize_placeholder(ph: Dict) -> int:
+    """Clone the source Old SKU into a synthetic placeholder SKU. Idempotent."""
+    import copy
+    phc = _placeholder_hc(ph["id"])
+    src = int(ph["source_hc"])
+    if phc in HIERARCHY_METRICS:          # already materialized this session
+        PLACEHOLDER_HCS.add(phc)
+        return phc
+    if src not in HIERARCHY_METRICS:      # source vanished — skip gracefully
+        return phc
+
+    # 1. Clone every base row of the source SKU (all years, all channels).
+    cloned = []
+    for r in WP_DATA:
+        if r["hierarchy_code"] != src:
+            continue
+        c = copy.deepcopy(r)
+        c["hierarchy_code"] = phc
+        if "l2_name" in c:
+            c["l2_name"] = ph["name"]
+        cloned.append(c)
+    WP_DATA.extend(cloned)
+
+    # 2. Mirror the source's index entries (no re-derivation → identical behavior).
+    for idx in _PLACEHOLDER_INDEXES:
+        for k, v in list(idx.items()):
+            if k[0] == src:
+                idx[(phc,) + k[1:]] = v
+    for k, v in list(_BASELINE_DR.items()):
+        if k[0] == src:
+            _BASELINE_DR[(phc,) + k[1:]] = v
+
+    # 3. Register catalog identity + metrics (copied from source).
+    src_h = next((h for h in HIERARCHIES if h["hierarchy_code"] == src), {})
+    HIERARCHIES.append({
+        "hierarchy_code": phc,
+        "l1_name": src_h.get("l1_name", "Placeholder"),
+        "l2_name": ph["name"],
+        "sku_code": f"PH-{ph['id']}",
+    })
+    HIERARCHY_METRICS[phc] = dict(HIERARCHY_METRICS[src])
+    PLACEHOLDER_HCS.add(phc)
+    return phc
+
+
+def _dematerialize_placeholder(phc: int) -> None:
+    """Tear a placeholder SKU out of every engine structure + drop its overrides."""
+    global WP_DATA
+    from database import db_delete_sku_setting
+    if phc not in PLACEHOLDER_HCS and phc not in HIERARCHY_METRICS:
+        return
+    WP_DATA = [r for r in WP_DATA if r["hierarchy_code"] != phc]
+    for idx in _PLACEHOLDER_INDEXES:
+        for k in [k for k in idx if k[0] == phc]:
+            idx.pop(k, None)
+    for k in [k for k in _BASELINE_DR if k[0] == phc]:
+        _BASELINE_DR.pop(k, None)
+    HIERARCHIES[:] = [h for h in HIERARCHIES if h["hierarchy_code"] != phc]
+    HIERARCHY_METRICS.pop(phc, None)
+    _SKU_SETTINGS_OVERRIDES.pop(phc, None)
+    PLACEHOLDER_HCS.discard(phc)
+    # Drop this placeholder's cell + setting overrides so a re-created id starts clean.
+    for key in [k for k in db_get_overrides() if k.startswith(f"{phc}_")]:
+        db_delete_override(key)
+    db_delete_sku_setting(phc)
+
+
+def _materialize_all_placeholders() -> None:
+    """Re-materialize every registered placeholder — run once at startup."""
+    for ph in db_list_placeholders():
+        _materialize_placeholder(ph)
+
+
 def get_placeholders() -> List[Dict]:
-    return db_list_placeholders()
+    """Registry rows annotated with their synthetic hierarchy_code."""
+    return [{**p, "placeholder_hc": _placeholder_hc(p["id"])} for p in db_list_placeholders()]
 
 
 def add_placeholder(name: str, source_hc: int) -> Dict:
     from datetime import datetime
-    return db_insert_placeholder(name, source_hc, datetime.utcnow().isoformat())
+    rec = db_insert_placeholder(name, source_hc, datetime.utcnow().isoformat())
+    phc = _materialize_placeholder(rec)
+    return {**rec, "placeholder_hc": phc}
 
 
 def delete_placeholder(pid: int) -> bool:
+    _dematerialize_placeholder(_placeholder_hc(pid))
     return db_delete_placeholder(pid)
-
-
-def get_placeholder_plan(pid: int, channel: str = None, year: int = DEFAULT_YEAR):
-    """Clone of the source SKU's UNACTUALISED (planning) rows — a forward what-if.
-    Placeholders never touch the real engine state; this is a read-only projection."""
-    ph = next((p for p in db_list_placeholders() if p["id"] == pid), None)
-    if not ph:
-        return None
-    rows = get_agg_rows(ph["source_hc"], channel, year=year)
-    return [r for r in rows if not r.get("actualised") and not r.get("is_ongoing")]
 
 
 def get_active_skus(fiscal_year: int, as_of_week: int = None) -> List[int]:
@@ -1418,6 +1504,11 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
         if int(str(r["current_week"])[:4]) != year:   # scope to the viewed fiscal year
             continue
         if hc_filter and r["hierarchy_code"] != hc_filter:
+            continue
+        # Placeholders are hidden synthetic SKUs: include them only when explicitly
+        # requested by hc (the placeholders page). An unfiltered portfolio sweep must
+        # never see them, or they would pollute aggregation / budget / exceptions.
+        if not hc_filter and r["hierarchy_code"] in PLACEHOLDER_HCS:
             continue
         if ch_filter and r["channel"] != ch_filter:
             continue
@@ -2801,3 +2892,10 @@ def _apply_top_down_impl(hcs: List[int], channels: List[str], target: float, fie
         _rebuild_fwd_demand_and_recomm(hcs, channels)
 
     return len(updates)
+
+
+# ── Startup: re-materialize persisted placeholders ────────────────────────────────
+# Runs after all engine state (WP_DATA, indexes, metrics) and helpers are defined.
+# Each placeholder is re-cloned from its source's immutable seed; the planner's own
+# edits live in the overrides table (keyed by the placeholder hc) and replay on top.
+_materialize_all_placeholders()

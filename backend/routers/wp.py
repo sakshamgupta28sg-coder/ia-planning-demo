@@ -12,7 +12,7 @@ from dummy_data import (
     get_budget, get_audit_log, get_season_progress,
     DEFAULT_YEAR, SELECTABLE_YEARS, _year_weeks, get_active_skus,
     get_master_catalog, set_sku_tag,
-    get_placeholders, add_placeholder, delete_placeholder, get_placeholder_plan,
+    get_placeholders, add_placeholder, delete_placeholder,
 )
 
 router = APIRouter(prefix="/wp", tags=["working-plan"])
@@ -81,12 +81,9 @@ def remove_placeholder(pid: int):
     return {"deleted": pid}
 
 
-@router.get("/placeholders/{pid}/plan")
-def placeholder_plan(pid: int, channel: Optional[str] = None, year: int = DEFAULT_YEAR):
-    rows = get_placeholder_plan(pid, channel, year)
-    if rows is None:
-        raise HTTPException(404, "Placeholder not found")
-    return rows
+# A placeholder is now a real (hidden) synthetic SKU, so the placeholders page reads
+# and edits it through the standard WP endpoints with hierarchy_code = placeholder_hc
+# (e.g. GET /by-week, PUT /row, POST /accept-recomm). No dedicated plan endpoint needed.
 
 
 # ── By-week aggregation (supports portfolio + filtered view) ──────────────────
