@@ -247,6 +247,7 @@ def get_wp_summary(
     total_disc = round(sum(r.get("written_discount_dollars", 0) for r in rows), 2)
     total_cost = round(total_d - total_g, 2)            # COGS = revenue − GM
     gross = total_d + total_disc                         # units × AIR (pre-markdown)
+    total_oo = sum(r.get("on_order_placed_total_unit", 0) for r in rows)
     return {
         "total_written_sales_units":   total_u,
         "total_written_sales_dollars": total_d,
@@ -256,6 +257,10 @@ def get_wp_summary(
         "total_written_cost": total_cost,
         # Dollar-weighted avg discount % = markdown $ / gross $ (not a naive mean)
         "avg_written_disc_perc": round(total_disc / gross, 4) if gross else 0,
+        "total_on_order_units": int(total_oo),
+        # Blended pricing KPIs (avoid divide-by-zero)
+        "avg_aur": round(total_d / total_u, 2) if total_u else 0,
+        "avg_auc": round(total_cost / total_u, 2) if total_u else 0,
     }
 
 
