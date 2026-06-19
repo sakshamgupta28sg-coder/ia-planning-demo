@@ -19,6 +19,27 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
+# ── Mutation version ──────────────────────────────────────────────────────────
+# Monotonic counter bumped on every committed write. Read layers (e.g. the
+# get_agg_rows cache in dummy_data) key off mutation_version() to detect when any
+# persisted state changed and invalidate. Every write fn commits through
+# _commit(), so this covers all current and future writers automatically — there
+# is no per-function bump to forget. Reads never commit, so they never bump.
+_MUTATION_VERSION = 0
+
+
+def _commit(conn: sqlite3.Connection) -> None:
+    """Commit a write and advance the mutation version (single choke point)."""
+    global _MUTATION_VERSION
+    conn.commit()
+    _MUTATION_VERSION += 1
+
+
+def mutation_version() -> int:
+    """Current write version — increases by 1 on every committed mutation."""
+    return _MUTATION_VERSION
+
+
 def init_db():
     """Create tables if they don't exist. Safe to call on every startup."""
     with _conn() as conn:
@@ -124,7 +145,7 @@ def init_db():
         cols = {r[1] for r in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
         if "settings_data" not in cols:
             conn.execute("ALTER TABLE snapshots ADD COLUMN settings_data TEXT NOT NULL DEFAULT '{}'")
-        conn.commit()
+        _commit(conn)
 
 
 # ── Warehouse: WP facts seed ────────────────────────────────────────────────────
@@ -137,7 +158,7 @@ def db_replace_wp_facts(rows: List[Dict]):
             "INSERT INTO wp_facts (hierarchy_code, channel, current_week, payload) VALUES (?, ?, ?, ?)",
             [(r["hierarchy_code"], r["channel"], r["current_week"], json.dumps(r)) for r in rows],
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_load_wp_facts() -> List[Dict]:
@@ -162,7 +183,7 @@ def db_replace_fiscal_calendar(rows: List[Dict]):
             [(r["week_code"], r["fiscal_year"], r["fiscal_week"], r["start_date"],
               r["end_date"], r["fiscal_month"], r["fiscal_quarter"]) for r in rows],
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_load_fiscal_calendar() -> List[Dict]:
@@ -195,7 +216,7 @@ def db_replace_master_sku(rows: List[Dict]):
               existing_tags.get(r["hierarchy_code"], r.get("tagged_to")))
              for r in rows],
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_load_master_sku() -> List[Dict]:
@@ -211,7 +232,7 @@ def db_set_master_tag(hierarchy_code: int, tagged_to: Optional[int]) -> bool:
             "UPDATE master_sku SET tagged_to = ? WHERE hierarchy_code = ?",
             (tagged_to, hierarchy_code),
         )
-        conn.commit()
+        _commit(conn)
     return cur.rowcount > 0
 
 
@@ -227,7 +248,7 @@ def db_init_placeholders():
                 created_at  TEXT    NOT NULL
             )
         """)
-        conn.commit()
+        _commit(conn)
 
 
 def db_list_placeholders() -> List[Dict]:
@@ -242,7 +263,7 @@ def db_insert_placeholder(name: str, source_hc: int, created_at: str) -> Dict:
             "INSERT INTO placeholders (name, source_hc, created_at) VALUES (?, ?, ?)",
             (name, source_hc, created_at),
         )
-        conn.commit()
+        _commit(conn)
         pid = cur.lastrowid
     return {"id": pid, "name": name, "source_hc": source_hc, "created_at": created_at}
 
@@ -250,7 +271,7 @@ def db_insert_placeholder(name: str, source_hc: int, created_at: str) -> Dict:
 def db_delete_placeholder(pid: int) -> bool:
     with _conn() as conn:
         cur = conn.execute("DELETE FROM placeholders WHERE id = ?", (pid,))
-        conn.commit()
+        _commit(conn)
     return cur.rowcount > 0
 
 
@@ -269,14 +290,14 @@ def db_upsert_channel_setting(key: str, data: Dict):
             "INSERT OR REPLACE INTO channel_settings (key, data) VALUES (?, ?)",
             (key, json.dumps(data)),
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_delete_channel_setting(key: str) -> bool:
     """Delete a channel-level setting override. Returns True if row deleted."""
     with _conn() as conn:
         cur = conn.execute("DELETE FROM channel_settings WHERE key = ?", (key,))
-        conn.commit()
+        _commit(conn)
     return cur.rowcount > 0
 
 
@@ -296,14 +317,14 @@ def db_upsert_sku_setting(hierarchy_code: int, data: Dict):
             "INSERT OR REPLACE INTO sku_settings (hierarchy_code, data) VALUES (?, ?)",
             (hierarchy_code, json.dumps(data)),
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_delete_sku_setting(hierarchy_code: int) -> bool:
     """Delete setting overrides for one SKU → falls back to base metrics."""
     with _conn() as conn:
         cur = conn.execute("DELETE FROM sku_settings WHERE hierarchy_code = ?", (hierarchy_code,))
-        conn.commit()
+        _commit(conn)
     return cur.rowcount > 0
 
 
@@ -315,7 +336,7 @@ def db_replace_sku_settings(settings: Dict[int, Dict]):
             "INSERT INTO sku_settings (hierarchy_code, data) VALUES (?, ?)",
             [(int(hc), json.dumps(data)) for hc, data in settings.items()],
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_replace_channel_settings(settings: Dict[str, Dict]):
@@ -326,7 +347,7 @@ def db_replace_channel_settings(settings: Dict[str, Dict]):
             "INSERT INTO channel_settings (key, data) VALUES (?, ?)",
             [(key, json.dumps(data)) for key, data in settings.items()],
         )
-        conn.commit()
+        _commit(conn)
 
 
 # ── Override CRUD ─────────────────────────────────────────────────────────────
@@ -345,14 +366,14 @@ def db_upsert_override(key: str, data: Dict):
             "INSERT OR REPLACE INTO overrides (key, data) VALUES (?, ?)",
             (key, json.dumps(data)),
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_delete_override(key: str) -> bool:
     """Delete a single override entry by key. Returns True if a row was deleted."""
     with _conn() as conn:
         cur = conn.execute("DELETE FROM overrides WHERE key = ?", (key,))
-        conn.commit()
+        _commit(conn)
     return cur.rowcount > 0
 
 
@@ -360,7 +381,7 @@ def db_clear_overrides():
     """Delete all overrides (reset)."""
     with _conn() as conn:
         conn.execute("DELETE FROM overrides")
-        conn.commit()
+        _commit(conn)
 
 
 def db_replace_overrides(overrides: Dict[str, Dict]):
@@ -372,7 +393,7 @@ def db_replace_overrides(overrides: Dict[str, Dict]):
                 "INSERT INTO overrides (key, data) VALUES (?, ?)",
                 (key, json.dumps(data)),
             )
-        conn.commit()
+        _commit(conn)
 
 
 # ── Snapshot CRUD ─────────────────────────────────────────────────────────────
@@ -434,7 +455,7 @@ def db_insert_snapshot(name: str, created_at: str, overrides_count: int,
              json.dumps(overrides), json.dumps(summary), json.dumps(settings or {})),
         )
         snap_id = cur.lastrowid
-        conn.commit()
+        _commit(conn)
     return {
         "id":              snap_id,
         "name":            name,
@@ -448,7 +469,7 @@ def db_delete_snapshot(snap_id: int) -> bool:
     """Delete snapshot by id. Returns True if a row was deleted."""
     with _conn() as conn:
         cur = conn.execute("DELETE FROM snapshots WHERE id = ?", (snap_id,))
-        conn.commit()
+        _commit(conn)
     return cur.rowcount > 0
 
 
@@ -456,7 +477,7 @@ def db_rename_snapshot(snap_id: int, new_name: str) -> bool:
     """Rename a snapshot. Returns True if a row was updated."""
     with _conn() as conn:
         cur = conn.execute("UPDATE snapshots SET name = ? WHERE id = ?", (new_name, snap_id))
-        conn.commit()
+        _commit(conn)
     return cur.rowcount > 0
 
 
@@ -468,7 +489,7 @@ def db_batch_upsert_overrides(updates: Dict[str, Dict]):
                 "INSERT OR REPLACE INTO overrides (key, data) VALUES (?, ?)",
                 (key, json.dumps(data)),
             )
-        conn.commit()
+        _commit(conn)
 
 
 # ── New SKU CRUD ───────────────────────────────────────────────────────────────
@@ -497,7 +518,7 @@ def db_insert_new_sku(hierarchy_code: int, data: Dict):
             "INSERT OR REPLACE INTO new_skus (hierarchy_code, data) VALUES (?, ?)",
             (hierarchy_code, json.dumps(payload)),
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_log_audit(hierarchy_code: int, channel: str, current_week: int,
@@ -514,7 +535,7 @@ def db_log_audit(hierarchy_code: int, channel: str, current_week: int,
              str(old_value) if old_value is not None else None,
              str(new_value)),
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_get_audit_log(limit: int = 100, hierarchy_code: int = None,
@@ -553,7 +574,7 @@ def db_set_setting(key: str, value: str) -> None:
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
             (key, value),
         )
-        conn.commit()
+        _commit(conn)
 
 
 def db_get_budget_overrides() -> Dict[str, float]:
@@ -567,5 +588,5 @@ def db_delete_new_sku(hierarchy_code: int) -> bool:
     """Delete a new SKU by hierarchy_code. Returns True if a row was deleted."""
     with _conn() as conn:
         cur = conn.execute("DELETE FROM new_skus WHERE hierarchy_code = ?", (hierarchy_code,))
-        conn.commit()
+        _commit(conn)
     return cur.rowcount > 0

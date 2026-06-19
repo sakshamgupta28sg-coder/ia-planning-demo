@@ -912,7 +912,7 @@ from database import (
     db_get_all_new_skus, db_get_max_new_sku_hc, db_insert_new_sku, db_delete_new_sku,
     db_delete_override,
     db_log_audit, db_get_audit_log,
-    db_get_setting, db_set_setting,
+    db_get_setting, db_set_setting, mutation_version,
     db_replace_wp_facts, db_load_wp_facts, db_replace_fiscal_calendar,
     db_replace_master_sku, db_load_master_sku, db_set_master_tag,
     db_init_placeholders, db_list_placeholders, db_insert_placeholder, db_delete_placeholder,
@@ -1084,6 +1084,7 @@ def _materialize_placeholder(ph: Dict) -> int:
     })
     HIERARCHY_METRICS[phc] = dict(HIERARCHY_METRICS[src])
     PLACEHOLDER_HCS.add(phc)
+    _bump_mem_version()   # WP_DATA changed in memory → invalidate agg cache
     return phc
 
 
@@ -1107,6 +1108,7 @@ def _dematerialize_placeholder(phc: int) -> None:
     for key in [k for k in db_get_overrides() if k.startswith(f"{phc}_")]:
         db_delete_override(key)
     db_delete_sku_setting(phc)
+    _bump_mem_version()   # WP_DATA changed in memory → invalidate agg cache
 
 
 def _materialize_all_placeholders() -> None:
@@ -1480,15 +1482,57 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
     return row
 
 
+# ── get_agg_rows read-through cache ───────────────────────────────────────────
+# _agg_rows_impl recomputes the full aggregate + BOP/EOP chain + recomm on every
+# call (no memoization), which is fine at 8 SKUs (~65ms) but grows linearly (~5ms
+# /SKU). Most requests are reads with no state change, so we cache per
+# (year, hc_filter, ch_filter) and invalidate the WHOLE cache whenever the
+# mutation token changes. The token = (DB mutation_version, in-memory WP_DATA
+# version); any committed write or placeholder (de)materialization bumps it, so a
+# stale read is impossible. Scenario evaluation (_overrides_override) bypasses the
+# cache entirely. Returned rows are fresh shallow copies (buckets are flat scalar
+# dicts), so callers can mutate freely without corrupting the cached copy.
+_AGG_CACHE: Dict[tuple, List[Dict]] = {}
+_AGG_CACHE_TOKEN = None
+# Bumped on in-memory WP_DATA mutations that don't themselves commit a DB write
+# the cache would otherwise see (placeholder materialize/dematerialize). DB writes
+# are already covered by mutation_version().
+_MEM_VERSION = 0
+
+
+def _bump_mem_version() -> None:
+    global _MEM_VERSION
+    _MEM_VERSION += 1
+
+
 def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
                  _overrides_override: Dict = None, year: int = DEFAULT_YEAR) -> List[Dict]:
     """Aggregate one year's WP_DATA by (hc, wk, ch), sum sub_channels, apply overrides.
 
     Runs the engine under _scoped_year(year) so the chain/recomm passes walk that
     year's weeks. Defaults to DEFAULT_YEAR (2026) → byte-identical to pre-multi-year.
+    Read-through cached (see _AGG_CACHE); scenario eval bypasses the cache.
     """
-    with _scoped_year(year):
-        return _agg_rows_impl(hc_filter, ch_filter, _overrides_override, year)
+    # Scenario evaluation supplies its own override set and must never read or
+    # write the shared cache.
+    if _overrides_override is not None:
+        with _scoped_year(year):
+            return _agg_rows_impl(hc_filter, ch_filter, _overrides_override, year)
+
+    global _AGG_CACHE_TOKEN
+    token = (mutation_version(), _MEM_VERSION)
+    if token != _AGG_CACHE_TOKEN:
+        _AGG_CACHE.clear()
+        _AGG_CACHE_TOKEN = token
+
+    ckey = (year, hc_filter, ch_filter)
+    cached = _AGG_CACHE.get(ckey)
+    if cached is None:
+        with _scoped_year(year):
+            cached = _agg_rows_impl(hc_filter, ch_filter, None, year)
+        _AGG_CACHE[ckey] = cached
+    # Hand out fresh copies so callers never mutate the cached rows.
+    return [dict(r) for r in cached]
 
 
 def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
