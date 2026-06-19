@@ -6,7 +6,18 @@ import threading
 from datetime import date, timedelta
 from typing import Dict, List
 
+import seed_loader
+
 random.seed(42)
+
+# ── CSV seed (warehouse door) ─────────────────────────────────────────────────
+# If backend/seeds/catalog.csv exists, the catalog + supply + budgets are loaded
+# from CSV and override the hardcoded demo literals below (see the override blocks
+# before generation and before the master-SKU seed). Absent → demo literals are
+# used unchanged (regression gate stays byte-identical). A malformed seed raises
+# SeedError at import — fail loud, never plan on bad data.
+SEEDS_DIR = os.environ.get("IA_SEEDS_DIR", os.path.join(os.path.dirname(__file__), "seeds"))
+_SEED = seed_loader.load_seed(SEEDS_DIR)
 
 HIERARCHIES = [
     {"hierarchy_code": 10001, "l1_name": "Footwear", "l2_name": "Running Shoes",      "sku_code": "FW-RUN-001"},
@@ -862,6 +873,24 @@ def delete_sku(hierarchy_code: int) -> bool:
     return db_delete_new_sku(hierarchy_code)
 
 
+# ── CSV seed override (generation-feeding globals) ────────────────────────────
+# Replace the demo literals with the CSV catalog BEFORE generation runs, so every
+# downstream structure (RNG sales curve, supply, demand indexes, budgets) is built
+# from the seed. Order of HIERARCHIES + NEW_SKU_HIERARCHIES is preserved from the
+# CSV so the RNG draw sequence — and thus byte-identical demo output — is kept when
+# the seed equals the demo. Descriptors + lifecycle anchors are overridden later,
+# just before the master-SKU seed (they aren't needed for generation).
+if _SEED is not None:
+    HIERARCHIES = list(_SEED.hierarchies)
+    NEW_SKU_HIERARCHIES = list(_SEED.new_hierarchies)
+    NEW_SKU_HCS = set(_SEED.new_hcs)
+    HIERARCHY_METRICS = dict(_SEED.metrics)
+    SUPPLY_PROFILE = dict(_SEED.supply)
+    NEW_SKU_LIFECYCLE = dict(_SEED.new_lifecycle)
+    BUDGET_DATA = dict(_SEED.budgets)
+    CATEGORIES = list(dict.fromkeys(h["l1_name"] for h in HIERARCHIES))
+
+
 # ── Pre-generate on import (multi-year, RNG-order-preserving) ─────────────────────
 # Order matters: generate 2026 FIRST, then TY/LY + scenario, so their RNG draws sit
 # at the exact same offset as before multi-year → byte-identical. The view-only
@@ -952,6 +981,17 @@ _SKU_DESCRIPTORS = {
 # deactivating far in the future → active in every viewable year (2026/27/28).
 _OLD_ACTIVATION_WK   = 202401
 _OLD_DEACTIVATION_WK = 202852
+
+# ── CSV seed override (master-catalog globals) ────────────────────────────────
+# Descriptors (color/size) + the Old-SKU lifecycle anchors feed _build_master_sku_seed
+# only; override them from the seed here, after their literal definitions and before
+# the seed is built. New-SKU color/size/lifecycle already came from NEW_SKU_LIFECYCLE.
+if _SEED is not None:
+    _SKU_DESCRIPTORS = dict(_SEED.descriptors)
+    if _SEED.old_activation is not None:
+        _OLD_ACTIVATION_WK = _SEED.old_activation
+    if _SEED.old_deactivation is not None:
+        _OLD_DEACTIVATION_WK = _SEED.old_deactivation
 
 
 def _build_master_sku_seed() -> List[Dict]:
