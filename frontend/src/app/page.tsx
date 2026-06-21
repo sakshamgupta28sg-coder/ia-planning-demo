@@ -2,11 +2,11 @@ import Link from "next/link";
 
 const CARDS = [
   {
-    href: "/wp",
-    title: "Working Plan",
-    desc: "Written sales, BOP/EOP inventory, on-order, recommended receipts by week × channel × hierarchy.",
-    color: "border-blue-500",
-    badge: "WP",
+    href: "/admin",
+    title: "Data Import",
+    desc: "Upload your own catalog, supply, budgets, and sales history as CSV. Validated before saving — run the tool on your own products instead of the demo data.",
+    color: "border-purple-500",
+    badge: "CSV",
   },
   {
     href: "/master",
@@ -16,18 +16,18 @@ const CARDS = [
     badge: "SKU",
   },
   {
+    href: "/wp",
+    title: "Working Plan",
+    desc: "Written sales, BOP/EOP inventory, on-order, recommended receipts by week × channel × hierarchy.",
+    color: "border-blue-500",
+    badge: "WP",
+  },
+  {
     href: "/placeholders",
     title: "Placeholders",
     desc: "What-if SKUs cloned from an Old SKU across all years, then edited like the Working Plan. Independent of the source and excluded from the live portfolio.",
     color: "border-amber-500",
     badge: "WHATIF",
-  },
-  {
-    href: "/admin",
-    title: "Data Import",
-    desc: "Upload your own catalog, supply, budgets, and sales history as CSV. Validated before saving — run the tool on your own products instead of the demo data.",
-    color: "border-purple-500",
-    badge: "CSV",
   },
 ];
 
