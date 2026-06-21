@@ -35,10 +35,12 @@ type WPRow = {
   ly_sales_units: number; ly_sales_dollars: number;
   ly_units_var: number; ly_dollars_var: number;
   ly_units_var_perc: number; ly_dollars_var_perc: number;
+  ly_aur: number; ly_dr_perc: number; ly_discount_dollars: number;
   // LLY
   lly_sales_units: number; lly_sales_dollars: number;
   lly_units_var: number; lly_dollars_var: number;
   lly_units_var_perc: number; lly_dollars_var_perc: number;
+  lly_aur: number; lly_dr_perc: number; lly_discount_dollars: number;
   // Markdown
   markdown_units: number; markdown_dollars: number;
   actualised: boolean;
@@ -1073,7 +1075,10 @@ export default function WPPage() {
       "Plan U","Plan $","Act U","Act $","Var U","Var U%","ST%",
       "WOS","OTB U","OTB $","GM $","GM %","MD U","MD $",
       "BOP","EOP","OO Placed","Recomm Rcpt",
-      "LY U","LY $","TY/LY U%","TY/LY $%"];
+      "LY U","LY $","TY/LY U%","TY/LY $%",
+      "AIR","TY AUR","LY AUR","LLY AUR",
+      "TY Disc%","LY Disc%","LLY Disc%",
+      "TY Disc$","LY Disc$","LLY Disc$"];
     const csv = [
       hdrs.join(","),
       ...rows.map((r) => {
@@ -1091,6 +1096,9 @@ export default function WPPage() {
           r.bop_units, r.eop_units, r.on_order_placed_total_unit, r.recomm_receipt_units,
           r.ly_sales_units, r.ly_sales_dollars,
           `${(r.ly_units_var_perc * 100).toFixed(1)}%`, `${(r.ly_dollars_var_perc * 100).toFixed(1)}%`,
+          r.written_air, r.written_aur, r.ly_aur, r.lly_aur,
+          `${(r.written_dr_perc * 100).toFixed(1)}%`, `${(r.ly_dr_perc * 100).toFixed(1)}%`, `${(r.lly_dr_perc * 100).toFixed(1)}%`,
+          r.written_discount_dollars, r.ly_discount_dollars, r.lly_discount_dollars,
         ].join(",");
       }),
     ].join("\n");
@@ -1979,6 +1987,10 @@ export default function WPPage() {
                   { l: "Week", left: true }, { l: "Product", left: true }, { l: "Channel", left: true },
                   { l: "TY U" }, { l: "LY U" }, { l: "TY/LY U%" }, { l: "LLY U" }, { l: "TY/LLY U%" },
                   { l: "TY $" }, { l: "LY $" }, { l: "TY/LY $%" }, { l: "LLY $" }, { l: "TY/LLY $%" },
+                  { l: "AIR" },
+                  { l: "TY AUR" }, { l: "LY AUR" }, { l: "LLY AUR" },
+                  { l: "TY Disc%" }, { l: "LY Disc%" }, { l: "LLY Disc%" },
+                  { l: "TY Disc$" }, { l: "LY Disc$" }, { l: "LLY Disc$" },
                 ].map((h) => (
                   <th key={h.l} className={`px-3 py-2 font-medium whitespace-nowrap ${h.left ? "text-left" : "text-right"}`}>{h.l}</th>
                 ))}
@@ -2121,6 +2133,18 @@ export default function WPPage() {
                       <td className={`px-3 py-1.5 text-right font-medium ${lyVarColor(r.ly_dollars_var_perc)}`}>{pct(r.ly_dollars_var_perc)}</td>
                       <td className="px-3 py-1.5 text-right text-slate-600">{fmtD(r.lly_sales_dollars)}</td>
                       <td className={`px-3 py-1.5 text-right font-medium ${lyVarColor(r.lly_dollars_var_perc)}`}>{pct(r.lly_dollars_var_perc)}</td>
+                      {/* Price / discount block — AIR per-SKU constant (TY only); AUR/Disc vary per year.
+                          AIR/AUR shown to 2dp (per-unit price — cents matter), matching the Plan tab. */}
+                      <td className="px-3 py-1.5 text-right text-slate-400" title="Avg Item Retail (full ticket) — same across years">{r.written_air.toFixed(2)}</td>
+                      <td className="px-3 py-1.5 text-right">{r.written_aur.toFixed(2)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-400">{r.ly_aur.toFixed(2)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-600">{r.lly_aur.toFixed(2)}</td>
+                      <td className="px-3 py-1.5 text-right text-orange-300">{pct(r.written_dr_perc)}</td>
+                      <td className="px-3 py-1.5 text-right text-orange-300/70">{pct(r.ly_dr_perc)}</td>
+                      <td className="px-3 py-1.5 text-right text-orange-300/50">{pct(r.lly_dr_perc)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-300">{fmtD(r.written_discount_dollars)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-400">{fmtD(r.ly_discount_dollars)}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-600">{fmtD(r.lly_discount_dollars)}</td>
                     </>}
                   </tr>
                 );

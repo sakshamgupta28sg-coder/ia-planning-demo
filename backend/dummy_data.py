@@ -889,6 +889,12 @@ def generate_ty_ly_data() -> List[Dict]:
                 ty_dollars = round(ty_units * m["air"] * (1 - ty_dr), 2)
                 ly_dollars = round(ly_units * m["air"] * (1 - ly_dr), 2)
                 lly_dollars = round(lly_units * m["air"] * (1 - lly_dr), 2)
+                # Retail (ticket = units × AIR) + discount $ per year — feeds the
+                # TY/LY/LLY tab's AUR / Disc% / Disc$ columns. AIR is per-SKU constant
+                # (no per-year AIR input), so only AUR/Disc%/Disc$ vary across years.
+                ty_retail  = round(ty_units  * m["air"], 2)
+                ly_retail  = round(ly_units  * m["air"], 2)
+                lly_retail = round(lly_units * m["air"], 2)
                 rows.append({
                     "hierarchy_code": hc,
                     "l1_name": h["l1_name"],
@@ -906,6 +912,10 @@ def generate_ty_ly_data() -> List[Dict]:
                     "ty_dr_perc": ty_dr,
                     "ly_dr_perc": ly_dr,
                     "lly_dr_perc": lly_dr,
+                    "ly_retail_dollars":   ly_retail,
+                    "lly_retail_dollars":  lly_retail,
+                    "ly_disc_dollars":     round(ly_retail  - ly_dollars,  2),
+                    "lly_disc_dollars":    round(lly_retail - lly_dollars, 2),
                     "units_var": ty_units - ly_units,
                     "units_var_perc": round((ty_units - ly_units) / ly_units if ly_units else 0, 4),
                     "dollars_var": round(ty_dollars - ly_dollars, 2),
@@ -1763,12 +1773,16 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             continue
         k = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
         if k not in _ly:
-            _ly[k]  = {"ly_units": 0,  "ly_dollars":  0.0}
-            _lly[k] = {"lly_units": 0, "lly_dollars": 0.0}
+            _ly[k]  = {"ly_units": 0,  "ly_dollars":  0.0, "ly_retail": 0.0,  "ly_disc": 0.0}
+            _lly[k] = {"lly_units": 0, "lly_dollars": 0.0, "lly_retail": 0.0, "lly_disc": 0.0}
         _ly[k]["ly_units"]    += r["ly_units"]
         _ly[k]["ly_dollars"]   = round(_ly[k]["ly_dollars"]  + r["ly_dollars"],  2)
+        _ly[k]["ly_retail"]    = round(_ly[k]["ly_retail"]   + r.get("ly_retail_dollars", 0.0), 2)
+        _ly[k]["ly_disc"]      = round(_ly[k]["ly_disc"]     + r.get("ly_disc_dollars",   0.0), 2)
         _lly[k]["lly_units"]  += r.get("lly_units", 0)
         _lly[k]["lly_dollars"] = round(_lly[k]["lly_dollars"] + r.get("lly_dollars", 0.0), 2)
+        _lly[k]["lly_retail"]  = round(_lly[k]["lly_retail"]  + r.get("lly_retail_dollars", 0.0), 2)
+        _lly[k]["lly_disc"]    = round(_lly[k]["lly_disc"]    + r.get("lly_disc_dollars",   0.0), 2)
 
     for key, b in buckets.items():
         # AUR / GM% / implied Disc%
@@ -1801,18 +1815,24 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             b["variance_units_perc"] = None
 
         # LY
-        ly = _ly.get(key, {"ly_units": 0, "ly_dollars": 0.0})
+        ly = _ly.get(key, {"ly_units": 0, "ly_dollars": 0.0, "ly_retail": 0.0, "ly_disc": 0.0})
         b["ly_sales_units"]      = ly["ly_units"]
         b["ly_sales_dollars"]    = ly["ly_dollars"]
+        b["ly_aur"]              = round(ly["ly_dollars"] / ly["ly_units"], 2) if ly["ly_units"] > 0 else 0.0
+        b["ly_discount_dollars"] = ly["ly_disc"]
+        b["ly_dr_perc"]          = round(ly["ly_disc"] / ly["ly_retail"], 4) if ly["ly_retail"] > 0 else 0.0
         b["ly_units_var"]        = b["written_sales_units"] - ly["ly_units"]
         b["ly_dollars_var"]      = round(b["written_sales_dollars"] - ly["ly_dollars"], 2)
         b["ly_units_var_perc"]   = round(b["ly_units_var"]   / ly["ly_units"],   4) if ly["ly_units"]   > 0 else 0.0
         b["ly_dollars_var_perc"] = round(b["ly_dollars_var"] / ly["ly_dollars"], 4) if ly["ly_dollars"] > 0 else 0.0
 
         # LLY (last-to-last year)
-        lly = _lly.get(key, {"lly_units": 0, "lly_dollars": 0.0})
+        lly = _lly.get(key, {"lly_units": 0, "lly_dollars": 0.0, "lly_retail": 0.0, "lly_disc": 0.0})
         b["lly_sales_units"]      = lly["lly_units"]
         b["lly_sales_dollars"]    = lly["lly_dollars"]
+        b["lly_aur"]              = round(lly["lly_dollars"] / lly["lly_units"], 2) if lly["lly_units"] > 0 else 0.0
+        b["lly_discount_dollars"] = lly["lly_disc"]
+        b["lly_dr_perc"]          = round(lly["lly_disc"] / lly["lly_retail"], 4) if lly["lly_retail"] > 0 else 0.0
         b["lly_units_var"]        = b["written_sales_units"] - lly["lly_units"]
         b["lly_dollars_var"]      = round(b["written_sales_dollars"] - lly["lly_dollars"], 2)
         b["lly_units_var_perc"]   = round(b["lly_units_var"]   / lly["lly_units"],   4) if lly["lly_units"]   > 0 else 0.0
