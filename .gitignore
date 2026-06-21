@@ -36,3 +36,4 @@ Thumbs.db
 # regression artifacts
 backend/_regression/baseline.json
 backend/planning.db
+backend/_reload_trigger.py

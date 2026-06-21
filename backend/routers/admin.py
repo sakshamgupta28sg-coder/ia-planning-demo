@@ -27,21 +27,51 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 _REQUIRED = ("catalog", "supply", "budgets")
 
 
+_RELOAD_SENTINEL = os.path.join(os.path.dirname(os.path.dirname(__file__)), "_reload_trigger.py")
+
+
+def _running_under_uvicorn_reload() -> bool:
+    """True when launched with `uvicorn --reload` (the worker sees --reload in argv)."""
+    argv = list(getattr(sys, "orig_argv", None) or sys.argv)
+    return any("--reload" in a for a in argv)
+
+
 def _schedule_restart(delay: float = 1.0):
-    """Re-exec the server process after `delay`s so saved seeds load via the normal
-    (proven, gate-verified) cold-start path. The brief delay lets the HTTP response
-    flush first. Env (IA_SEEDS_DIR / IA_DB_PATH) and cwd are inherited across exec,
-    so the restarted process reads the same seeds folder — now holding the new data.
+    """Reload the engine so saved seeds take effect, choosing a method safe for the
+    launch mode. The brief delay lets the HTTP response flush first.
+
+    - `uvicorn --reload`: rewrite the watched sentinel .py so uvicorn restarts its
+      worker, which re-imports the app and re-reads the seeds. Using execv here would
+      spawn a NESTED reloader, so it must be avoided under --reload.
+    - plain uvicorn: os.execv the process. Env (IA_SEEDS_DIR / IA_DB_PATH) and cwd are
+      inherited, so it reloads from the same seeds folder via the proven cold start.
     """
     def _restart():
+        if _running_under_uvicorn_reload():
+            # Rewrite the (gitignored) sentinel's content so uvicorn's watcher fires.
+            # Robust to the file being absent on a fresh checkout — we just create it.
+            try:
+                token = 0
+                try:
+                    with open(_RELOAD_SENTINEL, "r", encoding="utf-8") as f:
+                        for line in f.read().splitlines():
+                            if line.startswith("RELOAD_TOKEN"):
+                                token = int(line.split("=")[1].strip()) + 1
+                except FileNotFoundError:
+                    pass
+                with open(_RELOAD_SENTINEL, "w", encoding="utf-8") as f:
+                    f.write(f"# Reload sentinel (gitignored). Rewritten by /api/admin/reload\n"
+                            f"# under `uvicorn --reload` to trigger a worker reload.\n"
+                            f"RELOAD_TOKEN = {token}\n")
+            except Exception:
+                pass
+            return
         orig = getattr(sys, "orig_argv", None)
         if orig:
-            # Py 3.10+: exact original command (incl. `-m uvicorn`), faithful re-exec.
             os.execv(sys.executable, [sys.executable] + list(orig[1:]))
         else:
-            # Older Py: re-launch via `-m uvicorn` with the same uvicorn args. Running
-            # uvicorn's __main__.py directly would put its dir on sys.path and shadow
-            # stdlib `logging` (circular import), so always go through `-m`.
+            # Older Py: re-launch via `-m uvicorn` (running uvicorn's __main__.py
+            # directly shadows stdlib `logging` on sys.path → circular import).
             os.execv(sys.executable, [sys.executable, "-m", "uvicorn"] + sys.argv[1:])
     threading.Timer(delay, _restart).start()
 
