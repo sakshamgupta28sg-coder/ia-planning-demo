@@ -1,0 +1,18 @@
+hierarchy_code,channel,year_type,week_num,units,discount_perc
+# OPTIONAL FILE. Rename to sales_history.csv to activate. One row per
+# SKU x channel x year_type x fiscal-week. year_type is TY, LY, or LLY.
+# A stream (hc+channel) listed here plans on its own history: TY weeks show as
+# actuals, forward weeks are reforecast from the LY shape (then LLY, then TY).
+# A SKU NOT listed here keeps the parametric peak_week/peak_units curve.
+# week_num is the fiscal week 1..52 (not the 6-digit week_code). units >= 0.
+# discount_perc is a fraction (0.10 = 10% off); leave blank for 0.
+# Example: SKU 10001 Ecom — TY actuals for weeks 1-3, full LY + LLY history.
+10001,Ecom,TY,1,42,0.05
+10001,Ecom,TY,2,38,0.05
+10001,Ecom,TY,3,45,0.04
+10001,Ecom,LY,1,40,0.04
+10001,Ecom,LY,2,36,0.04
+10001,Ecom,LY,26,150,0.02
+10001,Ecom,LY,40,95,0.20
+10001,Ecom,LLY,1,35,0.06
+10001,Ecom,LLY,26,140,0.03
