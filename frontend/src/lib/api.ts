@@ -341,3 +341,9 @@ export async function uploadSeeds(form: FormData) {
   if (!res.ok) throw new Error(data.detail || (await res.text()) || "Upload failed");
   return data;
 }
+
+export async function reloadBackend() {
+  const res = await fetch(`${BASE}/admin/reload`, { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

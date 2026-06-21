@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchSeedStatus, uploadSeeds } from "../../lib/api";
+import { fetchSeedStatus, uploadSeeds, reloadBackend } from "../../lib/api";
 
 type Status = {
   source: string;
@@ -26,6 +26,7 @@ export default function AdminPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [picked, setPicked] = useState<Record<string, File | null>>({});
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,10 +43,24 @@ export default function AdminPage() {
 
   const canSubmit = FILES.filter((f) => f.required).every((f) => picked[f.key]) && !busy;
 
+  async function waitForBackend(expectSkus: number, tries = 30): Promise<boolean> {
+    for (let i = 0; i < tries; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const s = await fetchSeedStatus();
+        if (s && s.sku_count === expectSkus) return true;
+      } catch {
+        /* server still restarting — keep polling */
+      }
+    }
+    return false;
+  }
+
   async function submit() {
     setBusy(true);
     setResult(null);
     setError(null);
+    setPhase("Validating & saving…");
     try {
       const form = new FormData();
       for (const f of FILES) {
@@ -53,13 +68,27 @@ export default function AdminPage() {
         if (file) form.append(f.key, file);
       }
       const data = await uploadSeeds(form);
-      setResult(
-        `Saved ${data.sku_count} SKUs, ${data.budget_rows} budget rows` +
-          (data.has_history ? `, ${data.history_rows} history rows` : "") +
-          `. ${data.note}`
-      );
+      const skus = data.sku_count;
+      // Apply live: restart the backend and wait for it to come back with the new data.
+      setPhase("Applying — reloading the engine (a few seconds)…");
+      await reloadBackend();
+      const back = await waitForBackend(skus);
+      setPhase(null);
+      if (back) {
+        setResult(
+          `Live. ${skus} SKUs loaded` +
+            (data.has_history ? ` with ${data.history_rows} history rows` : "") +
+            `. Open the Working Plan to see your data.`
+        );
+      } else {
+        setResult(
+          `Saved ${skus} SKUs, but the reload is taking longer than expected. ` +
+            `Refresh in a moment — your data is saved.`
+        );
+      }
       loadStatus();
     } catch (e) {
+      setPhase(null);
       setError(String(e).replace(/^Error:\s*/, ""));
     } finally {
       setBusy(false);
@@ -121,15 +150,19 @@ export default function AdminPage() {
             onClick={submit}
             className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-blue-500"
           >
-            {busy ? "Validating…" : "Upload & Validate"}
+            {busy ? "Working…" : "Upload & Apply"}
           </button>
           <span className="text-xs text-slate-500">catalog, supply, budgets required · sales_history optional</span>
         </div>
+        {phase && <div className="text-sm text-blue-300 animate-pulse">{phase}</div>}
       </div>
 
       {result && (
         <div className="mt-5 rounded-lg border border-emerald-700 bg-emerald-950/40 p-4 text-sm text-emerald-200">
-          ✓ {result}
+          ✓ {result}{" "}
+          <a href="/wp" className="underline font-medium hover:text-white">
+            Go to Working Plan →
+          </a>
         </div>
       )}
       {error && (

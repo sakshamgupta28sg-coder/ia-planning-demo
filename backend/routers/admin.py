@@ -12,7 +12,9 @@ currently loaded.
 """
 import os
 import shutil
+import sys
 import tempfile
+import threading
 
 from fastapi import APIRouter, File, UploadFile, HTTPException
 from typing import Optional
@@ -23,6 +25,36 @@ from dummy_data import SEEDS_DIR, _SEED
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 _REQUIRED = ("catalog", "supply", "budgets")
+
+
+def _schedule_restart(delay: float = 1.0):
+    """Re-exec the server process after `delay`s so saved seeds load via the normal
+    (proven, gate-verified) cold-start path. The brief delay lets the HTTP response
+    flush first. Env (IA_SEEDS_DIR / IA_DB_PATH) and cwd are inherited across exec,
+    so the restarted process reads the same seeds folder — now holding the new data.
+    """
+    def _restart():
+        orig = getattr(sys, "orig_argv", None)
+        if orig:
+            # Py 3.10+: exact original command (incl. `-m uvicorn`), faithful re-exec.
+            os.execv(sys.executable, [sys.executable] + list(orig[1:]))
+        else:
+            # Older Py: re-launch via `-m uvicorn` with the same uvicorn args. Running
+            # uvicorn's __main__.py directly would put its dir on sys.path and shadow
+            # stdlib `logging` (circular import), so always go through `-m`.
+            os.execv(sys.executable, [sys.executable, "-m", "uvicorn"] + sys.argv[1:])
+    threading.Timer(delay, _restart).start()
+
+
+@router.post("/reload")
+def reload_backend():
+    """Restart the backend so newly-saved seeds take effect — no manual restart.
+
+    Returns immediately; the server is unavailable for a few seconds, then resumes
+    with the new catalog. The frontend polls /seed-status to detect when it's back.
+    """
+    _schedule_restart()
+    return {"status": "reloading", "note": "Backend restarting to load new data."}
 
 
 @router.get("/seed-status")
