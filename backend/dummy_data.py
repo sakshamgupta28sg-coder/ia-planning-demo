@@ -343,26 +343,51 @@ def _stream_has_history(hc: int, ch: str) -> bool:
     return _SEED is not None and _SEED.has_history(hc, ch)
 
 
-def _reforecast_shape(hc: int, ch: str):
-    """(weights_by_week_num, total_units, year_type) for forward reforecast, or None.
+def _scoped_fiscal_year() -> int:
+    """Absolute calendar year the season globals (FISCAL_WEEKS) currently point at."""
+    return int(str(FISCAL_WEEKS[0])[:4])
 
-    weights sum to 1.0 over the weeks present in the chosen history year; total is
-    that year's unit total (the default annual target). None → use parametric curve.
+
+def _reforecast_shape(hc: int, ch: str):
+    """(weights_by_week_num, total_units, source_year) for forward reforecast, or None.
+
+    Year-relative to the scoped plan year `py`: shape the forward weeks off the prior
+    year's actual seasonal curve (py-1 → py-2 → py fallback). weights sum to 1.0 over
+    the weeks present in the chosen history year; total is that year's unit total.
+    None → use parametric curve. (For py=2026 this is 2025→2024→2026, i.e. the old
+    LY→LLY→TY precedence — behavior preserved.)
     """
     if _SEED is None:
         return None
-    ckey = (hc, ch)
+    py = _scoped_fiscal_year()
+    ckey = (hc, ch, py)
     if ckey in _REFORECAST_CACHE:
         return _REFORECAST_CACHE[ckey]
+
+    def _series(yr):
+        s = {wn: _SEED.history_units(hc, ch, yr, wn)
+             for wn in range(1, 54)
+             if _SEED.history_units(hc, ch, yr, wn) is not None}
+        return s, sum(s.values())
+
+    # Shape forward weeks off the most recent prior year with a (near-)FULL curve —
+    # a partial actuals-to-date year (e.g. the current year, wks 1-19 only) can't
+    # forecast wks 20-52, so skip it. Walk py-1, py-2, py-3, then accept any year
+    # with data as a last resort. (For py=2026 this is 2025, the full prior year —
+    # behavior preserved.)
+    candidates = (py - 1, py - 2, py - 3, py)
     shape = None
-    for yt in ("LY", "LLY", "TY"):
-        series = {wn: _SEED.history_units(hc, ch, yt, wn)
-                  for wn in range(1, 54)
-                  if _SEED.history_units(hc, ch, yt, wn) is not None}
-        total = sum(series.values())
-        if series and total > 0:
-            shape = ({wn: u / total for wn, u in series.items()}, total, yt)
+    for yr in candidates:
+        series, total = _series(yr)
+        if total > 0 and len(series) >= 50:
+            shape = ({wn: u / total for wn, u in series.items()}, total, yr)
             break
+    if shape is None:                       # no full year — take whatever exists
+        for yr in candidates:
+            series, total = _series(yr)
+            if series and total > 0:
+                shape = ({wn: u / total for wn, u in series.items()}, total, yr)
+                break
     _REFORECAST_CACHE[ckey] = shape
     return shape
 
@@ -370,14 +395,15 @@ def _reforecast_shape(hc: int, ch: str):
 def _history_cell_units(hc: int, ch: str, week_num: int, is_actual: bool, shape) -> int:
     """Deterministic units for a history stream's week.
 
-    Actualised/ongoing week with a TY actual → that actual (real sales). Otherwise
-    (forward weeks, or actual weeks with no TY row) → reforecast share × target.
+    Actualised/ongoing week with an actual for the scoped year → that actual (real
+    sales). Otherwise (forward weeks, or actual weeks with no row) → reforecast
+    share × target.
     """
     if is_actual:
-        ty = _SEED.history_units(hc, ch, "TY", week_num)
-        if ty is not None:
-            return int(ty)
-    weights, total, _yt = shape
+        a = _SEED.history_units(hc, ch, _scoped_fiscal_year(), week_num)
+        if a is not None:
+            return int(a)
+    weights, total, _yr = shape
     return round(weights.get(week_num, 0.0) * total)
 
 
@@ -615,8 +641,8 @@ def generate_wp_data(hierarchies=None) -> List[Dict]:
                 if shape is not None:
                     is_actual = is_past or is_ongoing
                     units = _history_cell_units(hc, ch, week_num, is_actual, shape)
-                    _yt_dr = "TY" if is_actual else shape[2]
-                    hist_dr = _SEED.history_discount(hc, ch, _yt_dr, week_num)
+                    _yr_dr = _scoped_fiscal_year() if is_actual else shape[2]
+                    hist_dr = _SEED.history_discount(hc, ch, _yr_dr, week_num)
                     dr = hist_dr if hist_dr is not None else _dr_perc(week_num, m["peak_week"])
                 else:
                     curve = _seasonal_curve(week_num, m["peak_week"])
@@ -866,24 +892,28 @@ def generate_ty_ly_data() -> List[Dict]:
                 ly_dr  = _LY_DISC.get((h["l1_name"], hc, ch, week_num), ty_dr)
                 lly_dr = _LLY_DISC.get((h["l1_name"], hc, ch, week_num), ty_dr)
                 # History stream: override the RNG draws above with the seed's real
-                # TY/LY/LLY units + discount (RNG still drew, so no-history is unchanged).
+                # actuals by ABSOLUTE year (TY=this year, LY=-1, LLY=-2). NOTE: this
+                # TY_LY_DATA table is now only the demo/no-history fallback + the
+                # orphaned /ty-ly endpoint — history streams take the year-relative
+                # path in get_agg_rows. (RNG still drew, so no-history is unchanged.)
+                _ty_year  = wk // 100
                 if _stream_has_history(hc, ch):
-                    _hu = _SEED.history_units(hc, ch, "TY", week_num)
+                    _hu = _SEED.history_units(hc, ch, _ty_year, week_num)
                     if _hu is not None:
                         ty_units = int(_hu)
-                        _hd = _SEED.history_discount(hc, ch, "TY", week_num)
+                        _hd = _SEED.history_discount(hc, ch, _ty_year, week_num)
                         if _hd is not None:
                             ty_dr = _hd
-                    _hu = _SEED.history_units(hc, ch, "LY", week_num)
+                    _hu = _SEED.history_units(hc, ch, _ty_year - 1, week_num)
                     if _hu is not None:
                         ly_units = int(_hu)
-                        _hd = _SEED.history_discount(hc, ch, "LY", week_num)
+                        _hd = _SEED.history_discount(hc, ch, _ty_year - 1, week_num)
                         if _hd is not None:
                             ly_dr = _hd
-                    _hu = _SEED.history_units(hc, ch, "LLY", week_num)
+                    _hu = _SEED.history_units(hc, ch, _ty_year - 2, week_num)
                     if _hu is not None:
                         lly_units = int(_hu)
-                        _hd = _SEED.history_discount(hc, ch, "LLY", week_num)
+                        _hd = _SEED.history_discount(hc, ch, _ty_year - 2, week_num)
                         if _hd is not None:
                             lly_dr = _hd
                 ty_dollars = round(ty_units * m["air"] * (1 - ty_dr), 2)
@@ -1656,18 +1686,22 @@ def _bump_mem_version() -> None:
 
 
 def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
-                 _overrides_override: Dict = None, year: int = DEFAULT_YEAR) -> List[Dict]:
+                 _overrides_override: Dict = None, year: int = DEFAULT_YEAR,
+                 _with_compare: bool = True) -> List[Dict]:
     """Aggregate one year's WP_DATA by (hc, wk, ch), sum sub_channels, apply overrides.
 
     Runs the engine under _scoped_year(year) so the chain/recomm passes walk that
     year's weeks. Defaults to DEFAULT_YEAR (2026) → byte-identical to pre-multi-year.
     Read-through cached (see _AGG_CACHE); scenario eval bypasses the cache.
+
+    _with_compare: build the year-relative LY/LLY comparison columns. Set False when
+    this call is itself sourcing a comparison year's forecast (prevents recursion).
     """
     # Scenario evaluation supplies its own override set and must never read or
     # write the shared cache.
     if _overrides_override is not None:
         with _scoped_year(year):
-            return _agg_rows_impl(hc_filter, ch_filter, _overrides_override, year)
+            return _agg_rows_impl(hc_filter, ch_filter, _overrides_override, year, _with_compare)
 
     global _AGG_CACHE_TOKEN
     token = (mutation_version(), _MEM_VERSION)
@@ -1675,18 +1709,93 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
         _AGG_CACHE.clear()
         _AGG_CACHE_TOKEN = token
 
-    ckey = (year, hc_filter, ch_filter)
+    ckey = (year, hc_filter, ch_filter, _with_compare)
     cached = _AGG_CACHE.get(ckey)
     if cached is None:
         with _scoped_year(year):
-            cached = _agg_rows_impl(hc_filter, ch_filter, None, year)
+            cached = _agg_rows_impl(hc_filter, ch_filter, None, year, _with_compare)
         _AGG_CACHE[ckey] = cached
     # Hand out fresh copies so callers never mutate the cached rows.
     return [dict(r) for r in cached]
 
 
+# Comparison value used when a stream/year/week has neither history actuals nor a
+# forecast (e.g. a fully-past year not covered by the file). All zeros.
+_ZERO_COMP = {"units": 0, "dollars": 0.0, "aur": 0.0, "dr": 0.0, "discd": 0.0}
+
+
+def _emit_comparison(b: Dict, prefix: str, cv: Dict) -> None:
+    """Write a comparison year's columns (units/$/AUR/Disc%/Disc$ + variances) onto b."""
+    units, dollars = cv["units"], cv["dollars"]
+    b[f"{prefix}_sales_units"]      = units
+    b[f"{prefix}_sales_dollars"]    = dollars
+    b[f"{prefix}_aur"]              = cv["aur"]
+    b[f"{prefix}_dr_perc"]          = cv["dr"]
+    b[f"{prefix}_discount_dollars"] = cv["discd"]
+    uv = b["written_sales_units"] - units
+    dv = round(b["written_sales_dollars"] - dollars, 2)
+    b[f"{prefix}_units_var"]        = uv
+    b[f"{prefix}_dollars_var"]      = dv
+    b[f"{prefix}_units_var_perc"]   = round(uv / units, 4) if units > 0 else 0.0
+    b[f"{prefix}_dollars_var_perc"] = round(dv / dollars, 4) if dollars > 0 else 0.0
+
+
+def _comparison_map(comp_year: int, hc_filter, ch_filter) -> Dict[tuple, Dict]:
+    """Per (hc, ch, week_num) comparison values for an absolute calendar year.
+
+    Each actualised week present in the history file → real actuals; every other
+    week → that year's WP forecast (written_sales). Keyed for direct bucket lookup.
+    Only history streams use this (non-history streams keep the TY_LY_DATA path).
+    """
+    out: Dict[tuple, Dict] = {}
+    # That year's WP forecast (no nested comparison → no recursion). Empty for fully
+    # past years with no WP_DATA — those are covered entirely by file actuals.
+    fc = get_agg_rows(hc_filter, ch_filter, year=comp_year, _with_compare=False)
+    fc_by = {(r["hierarchy_code"], r["channel"], r["current_week"] % 100): r for r in fc}
+
+    streams = {(hc, ch) for (hc, ch, _wn) in fc_by}
+    if _SEED is not None:
+        streams |= {(hc, ch) for (hc, ch, yr, _wn) in _SEED.sales_history if yr == comp_year}
+
+    for (hc, ch) in streams:
+        if hc_filter and hc != hc_filter:
+            continue
+        if ch_filter and ch != ch_filter:
+            continue
+        if hc not in HIERARCHY_METRICS or not _stream_has_history(hc, ch):
+            continue
+        air = get_effective_metrics(hc)["air"]
+        for wn in range(1, 54):
+            fiscal_wk = comp_year * 100 + wn
+            actualised = fiscal_wk < CURRENT_WEEK
+            units = dollars = disc = None
+            if actualised:
+                u = _SEED.history_units(hc, ch, comp_year, wn)
+                if u is not None:
+                    disc = _SEED.history_discount(hc, ch, comp_year, wn) or 0.0
+                    units = int(u)
+                    dollars = round(units * air * (1 - disc), 2)
+            if units is None:
+                r = fc_by.get((hc, ch, wn))
+                if r is None:
+                    continue
+                units = r["written_sales_units"]
+                dollars = r["written_sales_dollars"]
+            retail = round(units * air, 2)
+            discd = round(retail - dollars, 2)
+            out[(hc, ch, wn)] = {
+                "units": units,
+                "dollars": dollars,
+                "aur": round(dollars / units, 2) if units > 0 else 0.0,
+                "dr": round(discd / retail, 4) if retail > 0 else 0.0,
+                "discd": discd,
+            }
+    return out
+
+
 def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
-                   _overrides_override: Dict = None, year: int = DEFAULT_YEAR) -> List[Dict]:
+                   _overrides_override: Dict = None, year: int = DEFAULT_YEAR,
+                   _with_compare: bool = True) -> List[Dict]:
     """Aggregate WP_DATA by (hc, wk, ch), sum sub_channels, apply overrides.
 
     _overrides_override: if provided, use this dict instead of reading from DB.
@@ -1784,6 +1893,17 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
         _lly[k]["lly_retail"]  = round(_lly[k]["lly_retail"]  + r.get("lly_retail_dollars", 0.0), 2)
         _lly[k]["lly_disc"]    = round(_lly[k]["lly_disc"]    + r.get("lly_disc_dollars",   0.0), 2)
 
+    # ── Year-relative comparison (history streams only) ──────────────────────────
+    # For history streams, LY = year-1 and LLY = year-2, pulled from the file where
+    # the week is actualised and forecast otherwise (see _comparison_map). Non-history
+    # streams keep the TY_LY_DATA path above (demo stays byte-identical). Skipped when
+    # this read is itself sourcing a comparison year's forecast (_with_compare=False).
+    _comp_ly: Dict[tuple, Dict] = {}
+    _comp_lly: Dict[tuple, Dict] = {}
+    if _with_compare and _SEED is not None and _SEED.sales_history:
+        _comp_ly  = _comparison_map(year - 1, hc_filter, ch_filter)
+        _comp_lly = _comparison_map(year - 2, hc_filter, ch_filter)
+
     for key, b in buckets.items():
         # AUR / GM% / implied Disc%
         if b["written_sales_units"] > 0:
@@ -1814,29 +1934,37 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             b["variance_dollars"]    = None
             b["variance_units_perc"] = None
 
-        # LY
-        ly = _ly.get(key, {"ly_units": 0, "ly_dollars": 0.0, "ly_retail": 0.0, "ly_disc": 0.0})
-        b["ly_sales_units"]      = ly["ly_units"]
-        b["ly_sales_dollars"]    = ly["ly_dollars"]
-        b["ly_aur"]              = round(ly["ly_dollars"] / ly["ly_units"], 2) if ly["ly_units"] > 0 else 0.0
-        b["ly_discount_dollars"] = ly["ly_disc"]
-        b["ly_dr_perc"]          = round(ly["ly_disc"] / ly["ly_retail"], 4) if ly["ly_retail"] > 0 else 0.0
-        b["ly_units_var"]        = b["written_sales_units"] - ly["ly_units"]
-        b["ly_dollars_var"]      = round(b["written_sales_dollars"] - ly["ly_dollars"], 2)
-        b["ly_units_var_perc"]   = round(b["ly_units_var"]   / ly["ly_units"],   4) if ly["ly_units"]   > 0 else 0.0
-        b["ly_dollars_var_perc"] = round(b["ly_dollars_var"] / ly["ly_dollars"], 4) if ly["ly_dollars"] > 0 else 0.0
+        # LY / LLY — history streams use the year-relative comparison maps; non-history
+        # streams (the demo) keep the TY_LY_DATA path → byte-identical to before.
+        if _stream_has_history(b["hierarchy_code"], b["channel"]):
+            _wn = b["current_week"] % 100
+            _hc, _ch = b["hierarchy_code"], b["channel"]
+            _emit_comparison(b, "ly",  _comp_ly.get((_hc, _ch, _wn),  _ZERO_COMP))
+            _emit_comparison(b, "lly", _comp_lly.get((_hc, _ch, _wn), _ZERO_COMP))
+        else:
+            # LY
+            ly = _ly.get(key, {"ly_units": 0, "ly_dollars": 0.0, "ly_retail": 0.0, "ly_disc": 0.0})
+            b["ly_sales_units"]      = ly["ly_units"]
+            b["ly_sales_dollars"]    = ly["ly_dollars"]
+            b["ly_aur"]              = round(ly["ly_dollars"] / ly["ly_units"], 2) if ly["ly_units"] > 0 else 0.0
+            b["ly_discount_dollars"] = ly["ly_disc"]
+            b["ly_dr_perc"]          = round(ly["ly_disc"] / ly["ly_retail"], 4) if ly["ly_retail"] > 0 else 0.0
+            b["ly_units_var"]        = b["written_sales_units"] - ly["ly_units"]
+            b["ly_dollars_var"]      = round(b["written_sales_dollars"] - ly["ly_dollars"], 2)
+            b["ly_units_var_perc"]   = round(b["ly_units_var"]   / ly["ly_units"],   4) if ly["ly_units"]   > 0 else 0.0
+            b["ly_dollars_var_perc"] = round(b["ly_dollars_var"] / ly["ly_dollars"], 4) if ly["ly_dollars"] > 0 else 0.0
 
-        # LLY (last-to-last year)
-        lly = _lly.get(key, {"lly_units": 0, "lly_dollars": 0.0, "lly_retail": 0.0, "lly_disc": 0.0})
-        b["lly_sales_units"]      = lly["lly_units"]
-        b["lly_sales_dollars"]    = lly["lly_dollars"]
-        b["lly_aur"]              = round(lly["lly_dollars"] / lly["lly_units"], 2) if lly["lly_units"] > 0 else 0.0
-        b["lly_discount_dollars"] = lly["lly_disc"]
-        b["lly_dr_perc"]          = round(lly["lly_disc"] / lly["lly_retail"], 4) if lly["lly_retail"] > 0 else 0.0
-        b["lly_units_var"]        = b["written_sales_units"] - lly["lly_units"]
-        b["lly_dollars_var"]      = round(b["written_sales_dollars"] - lly["lly_dollars"], 2)
-        b["lly_units_var_perc"]   = round(b["lly_units_var"]   / lly["lly_units"],   4) if lly["lly_units"]   > 0 else 0.0
-        b["lly_dollars_var_perc"] = round(b["lly_dollars_var"] / lly["lly_dollars"], 4) if lly["lly_dollars"] > 0 else 0.0
+            # LLY (last-to-last year)
+            lly = _lly.get(key, {"lly_units": 0, "lly_dollars": 0.0, "lly_retail": 0.0, "lly_disc": 0.0})
+            b["lly_sales_units"]      = lly["lly_units"]
+            b["lly_sales_dollars"]    = lly["lly_dollars"]
+            b["lly_aur"]              = round(lly["lly_dollars"] / lly["lly_units"], 2) if lly["lly_units"] > 0 else 0.0
+            b["lly_discount_dollars"] = lly["lly_disc"]
+            b["lly_dr_perc"]          = round(lly["lly_disc"] / lly["lly_retail"], 4) if lly["lly_retail"] > 0 else 0.0
+            b["lly_units_var"]        = b["written_sales_units"] - lly["lly_units"]
+            b["lly_dollars_var"]      = round(b["written_sales_dollars"] - lly["lly_dollars"], 2)
+            b["lly_units_var_perc"]   = round(b["lly_units_var"]   / lly["lly_units"],   4) if lly["lly_units"]   > 0 else 0.0
+            b["lly_dollars_var_perc"] = round(b["lly_dollars_var"] / lly["lly_dollars"], 4) if lly["lly_dollars"] > 0 else 0.0
 
     _active_ovrs = _overrides_override if _overrides_override is not None else db_get_overrides()
     for key, ovr in _active_ovrs.items():

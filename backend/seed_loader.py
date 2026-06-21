@@ -34,8 +34,13 @@ _BUDGET_COLS = {"hierarchy_code", "channel", "budget"}
 # sales_history.csv is OPTIONAL. Present → the SKUs it covers use real actuals +
 # an LY-seasonal reforecast for forward weeks; absent (or a SKU not in it) → the
 # parametric peak_week/peak_units curve drives sales as before.
-_HISTORY_COLS = {"hierarchy_code", "channel", "year_type", "week_num", "units", "discount_perc"}
-_YEAR_TYPES = ("TY", "LY", "LLY")
+#
+# History is keyed by ABSOLUTE calendar year (e.g. 2024/2025/2026), NOT a relative
+# TY/LY/LLY label. The engine maps the selected fiscal year Y → TY=Y, LY=Y-1,
+# LLY=Y-2, pulling a week from the file when it is actualised and present, else from
+# that year's WP forecast. (Relative labels only made sense for one "current year".)
+_HISTORY_COLS = {"hierarchy_code", "channel", "year", "week_num", "units", "discount_perc"}
+_MIN_YEAR, _MAX_YEAR = 2000, 2100
 
 
 class SeedError(ValueError):
@@ -56,22 +61,23 @@ class SeedData:
         self.descriptors: Dict[int, Tuple] = {}    # Old SKUs (color, size)
         self.old_activation: Optional[int] = None
         self.old_deactivation: Optional[int] = None
-        # Sales history (optional). (hc, ch, year_type, week_num) → {"units", "discount"}.
+        # Sales history (optional). (hc, ch, year:int, week_num) → {"units", "discount"}.
         # Empty when sales_history.csv is absent — callers then use the parametric curve.
-        self.sales_history: Dict[Tuple[int, str, str, int], Dict] = {}
+        self.sales_history: Dict[Tuple[int, str, int, int], Dict] = {}
+        # Set of (hc, ch) streams that have ANY history row — fast has_history().
+        self._history_streams: set = set()
 
     def has_history(self, hc: int, ch: str) -> bool:
-        """True if any LY/LLY/TY history exists for this stream (→ reforecast eligible)."""
-        return any((hc, ch, yt, wn) in self.sales_history
-                   for yt in _YEAR_TYPES for wn in range(1, 54))
+        """True if any-year history exists for this stream (→ reforecast eligible)."""
+        return (hc, ch) in self._history_streams
 
-    def history_units(self, hc: int, ch: str, year_type: str, week_num: int):
-        """Units for a stream/year/week, or None if not provided."""
-        rec = self.sales_history.get((hc, ch, year_type, week_num))
+    def history_units(self, hc: int, ch: str, year: int, week_num: int):
+        """Units for a stream / absolute calendar year / week, or None if absent."""
+        rec = self.sales_history.get((hc, ch, year, week_num))
         return rec["units"] if rec else None
 
-    def history_discount(self, hc: int, ch: str, year_type: str, week_num: int):
-        rec = self.sales_history.get((hc, ch, year_type, week_num))
+    def history_discount(self, hc: int, ch: str, year: int, week_num: int):
+        rec = self.sales_history.get((hc, ch, year, week_num))
         return rec["discount"] if rec else None
 
 
@@ -189,20 +195,21 @@ def load_seed(seeds_dir: str) -> Optional[SeedData]:
         for r in _read(hist_path, _HISTORY_COLS, "sales_history.csv"):
             hc = _num(r["hierarchy_code"])
             ch = (r["channel"] or "").strip()
-            yt = (r["year_type"] or "").strip().upper()
+            yr = _num(r["year"])
             wn = _num(r["week_num"])
             if hc not in seen_hc:
                 raise SeedError(f"sales_history.csv: hierarchy_code {hc} not in catalog")
             if ch not in CHANNELS:
                 raise SeedError(f"sales_history.csv hc {hc}: channel must be one of {CHANNELS}, got {ch!r}")
-            if yt not in _YEAR_TYPES:
-                raise SeedError(f"sales_history.csv hc {hc}: year_type must be one of {_YEAR_TYPES}, got {yt!r}")
+            if not isinstance(yr, int) or not (_MIN_YEAR <= yr <= _MAX_YEAR):
+                raise SeedError(f"sales_history.csv hc {hc}: year must be an integer {_MIN_YEAR}..{_MAX_YEAR}, got {r['year']!r}")
             if not isinstance(wn, int) or not (1 <= wn <= 53):
                 raise SeedError(f"sales_history.csv hc {hc}: week_num must be 1..53, got {r['week_num']!r}")
             units = _num(r["units"])
             disc = _num(r["discount_perc"])
             if units is None or units < 0:
-                raise SeedError(f"sales_history.csv hc {hc} {ch} {yt} wk {wn}: units must be >= 0")
-            sd.sales_history[(hc, ch, yt, wn)] = {"units": units, "discount": disc or 0.0}
+                raise SeedError(f"sales_history.csv hc {hc} {ch} {yr} wk {wn}: units must be >= 0")
+            sd.sales_history[(hc, ch, yr, wn)] = {"units": units, "discount": disc or 0.0}
+            sd._history_streams.add((hc, ch))
 
     return sd

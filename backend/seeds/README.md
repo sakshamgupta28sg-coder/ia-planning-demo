@@ -20,7 +20,7 @@ To point the tool at a different folder (e.g. a customer's data), set
 | `catalog.csv` | **yes** | SKU | identity, price, curve shape, lifecycle |
 | `supply.csv` | **yes** | SKU | buy posture (opening stock + commit) |
 | `budgets.csv` | **yes** | SKU × channel | open-to-buy dollar budget |
-| `sales_history.csv` | optional | SKU × channel × year × week | real TY/LY/LLY sales |
+| `sales_history.csv` | optional | SKU × channel × year × week | real per-year actuals (absolute year) |
 
 Channels are fixed: `Ecom`, `Indirect`, `Store`.
 
@@ -64,16 +64,23 @@ One row per SKU × channel. `budget` is the season OTB dollar target.
 ## sales_history.csv (optional)
 
 ```
-hierarchy_code,channel,year_type,week_num,units,discount_perc
-10001,Ecom,TY,1,42,0.05
-10001,Ecom,LY,26,150,0.02
+hierarchy_code,channel,year,week_num,units,discount_perc
+10001,Ecom,2026,1,46,0.04
+10001,Ecom,2025,26,150,0.02
+10001,Ecom,2024,26,140,0.03
 ```
 
-- `year_type` — `TY` (this year actuals), `LY` (last year), `LLY` (two years ago).
+- `year` — the **absolute calendar year** the sales happened in (e.g. `2024`, `2025`,
+  `2026`), NOT a relative `TY/LY/LLY` label. The tool maps the year you SELECT (Y) to
+  TY=Y, LY=Y-1, LLY=Y-2 and, per comparison year, uses this file where a week is
+  already actualised, else that year's WP forecast.
+- Put **actuals only**, by the year they happened: fully-past years → all 52 weeks;
+  the current year → only the weeks already closed (e.g. `1..19` if "now" is wk20);
+  future years → omit.
 - `week_num` — fiscal week `1..52` (NOT the 6-digit code).
 - `units` ≥ 0; `discount_perc` a fraction (`0.10` = 10% off; blank = 0).
-- A stream (SKU+channel) that appears here plans on its own data: TY weeks render
-  as actuals, forward weeks are reforecast from the LY shape (then LLY, then TY
-  run-rate). A SKU absent from this file keeps the parametric curve.
+- A stream (SKU+channel) that appears here plans on its own data; forward weeks are
+  reforecast from the most recent FULL prior year's shape. A SKU absent from this
+  file keeps the parametric curve.
 
 See `sales_history.csv.template` for a starter you can rename to `sales_history.csv`.
