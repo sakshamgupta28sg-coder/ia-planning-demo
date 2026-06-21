@@ -329,6 +329,58 @@ _LY_DISC: Dict[tuple, float] = {}
 _LLY_DISC: Dict[tuple, float] = {}
 
 
+# ── Sales-history reforecast helpers (Phase 2) ────────────────────────────────
+# When sales_history.csv covers a stream, forward weeks are reforecast from its
+# own history shape instead of the parametric peak curve. Precedence: LY → LLY →
+# TY actuals (run-rate). Streams with NO history fall through to the parametric
+# curve + RNG (the original behavior), so a corpus without sales_history.csv is
+# byte-identical to before. Shapes are pure functions of the seed (no RNG), so
+# results are deterministic across restarts.
+_REFORECAST_CACHE: Dict[tuple, object] = {}
+
+
+def _stream_has_history(hc: int, ch: str) -> bool:
+    return _SEED is not None and _SEED.has_history(hc, ch)
+
+
+def _reforecast_shape(hc: int, ch: str):
+    """(weights_by_week_num, total_units, year_type) for forward reforecast, or None.
+
+    weights sum to 1.0 over the weeks present in the chosen history year; total is
+    that year's unit total (the default annual target). None → use parametric curve.
+    """
+    if _SEED is None:
+        return None
+    ckey = (hc, ch)
+    if ckey in _REFORECAST_CACHE:
+        return _REFORECAST_CACHE[ckey]
+    shape = None
+    for yt in ("LY", "LLY", "TY"):
+        series = {wn: _SEED.history_units(hc, ch, yt, wn)
+                  for wn in range(1, 54)
+                  if _SEED.history_units(hc, ch, yt, wn) is not None}
+        total = sum(series.values())
+        if series and total > 0:
+            shape = ({wn: u / total for wn, u in series.items()}, total, yt)
+            break
+    _REFORECAST_CACHE[ckey] = shape
+    return shape
+
+
+def _history_cell_units(hc: int, ch: str, week_num: int, is_actual: bool, shape) -> int:
+    """Deterministic units for a history stream's week.
+
+    Actualised/ongoing week with a TY actual → that actual (real sales). Otherwise
+    (forward weeks, or actual weeks with no TY row) → reforecast share × target.
+    """
+    if is_actual:
+        ty = _SEED.history_units(hc, ch, "TY", week_num)
+        if ty is not None:
+            return int(ty)
+    weights, total, _yt = shape
+    return round(weights.get(week_num, 0.0) * total)
+
+
 def _build_history_discounts() -> tuple:
     """Seed LY + LLY actual discount per (l1_category, hc, channel, week_num)."""
     ly: Dict[tuple, float] = {}
@@ -534,24 +586,42 @@ def generate_wp_data(hierarchies=None) -> List[Dict]:
         # Calibrate opening BOP so week 21 WOS ≈ (target_wos + 2) using 8-week window.
         bop = {}
         for _ch in CHANNELS:
-            _fwd = sum(
-                round(m["peak_units"] * CHANNEL_SPLIT[_ch] * _seasonal_curve(wn, m["peak_week"]))
-                for wn in range(22, 22 + WOS_WINDOW)
-            )
+            _shape = _reforecast_shape(hc, _ch)
+            if _shape is not None:
+                # History stream: opening stock off the reforecast forward demand.
+                _fwd = sum(_history_cell_units(hc, _ch, wn, False, _shape)
+                           for wn in range(22, 22 + WOS_WINDOW))
+            else:
+                _fwd = sum(
+                    round(m["peak_units"] * CHANNEL_SPLIT[_ch] * _seasonal_curve(wn, m["peak_week"]))
+                    for wn in range(22, 22 + WOS_WINDOW)
+                )
             _fwd_avg = _fwd / WOS_WINDOW
             bop[_ch] = round(_fwd_avg * SUPPLY_PROFILE[hc]["open_wos"])
 
         for ch in CHANNELS:
             wh = WAREHOUSE_SUB_CHANNELS[ch]
+            # When this stream has history, forward weeks reforecast from it and
+            # actuals come straight from the seed — fully deterministic, no RNG. A
+            # stream without history takes the parametric+RNG path below unchanged,
+            # so a corpus with no sales_history.csv is byte-identical to before.
+            shape = _reforecast_shape(hc, ch)
             for wk in FISCAL_WEEKS:
                 week_num = wk % 100
                 is_past     = wk < CURRENT_WEEK     # clock-derived (== week_num<20 at 202620)
                 is_ongoing  = (wk == CURRENT_WEEK)
                 is_planning = not is_past and not is_ongoing
 
-                curve = _seasonal_curve(week_num, m["peak_week"])
-                dr    = _dr_perc(week_num, m["peak_week"])
-                units = round(m["peak_units"] * CHANNEL_SPLIT[ch] * curve * random.uniform(0.9, 1.1))
+                if shape is not None:
+                    is_actual = is_past or is_ongoing
+                    units = _history_cell_units(hc, ch, week_num, is_actual, shape)
+                    _yt_dr = "TY" if is_actual else shape[2]
+                    hist_dr = _SEED.history_discount(hc, ch, _yt_dr, week_num)
+                    dr = hist_dr if hist_dr is not None else _dr_perc(week_num, m["peak_week"])
+                else:
+                    curve = _seasonal_curve(week_num, m["peak_week"])
+                    dr    = _dr_perc(week_num, m["peak_week"])
+                    units = round(m["peak_units"] * CHANNEL_SPLIT[ch] * curve * random.uniform(0.9, 1.1))
                 aur   = round(m["air"] * (1 - dr), 2)
                 sales_dollars = round(aur * units, 2)
                 sales_cost    = round(m["auc"] * units, 2)
@@ -559,16 +629,21 @@ def generate_wp_data(hierarchies=None) -> List[Dict]:
                 gm_perc       = round((gm_dollar / sales_dollars) if sales_dollars else 0, 4)
 
                 current_bop = round(bop[ch])
-                # Past / ongoing: historical receipts (random noise).
-                # Planning:       placeholder 0 — Pass 1b will set correct target-WOS receipts.
+                # Past / ongoing: historical receipts. Demo = random noise; history
+                # stream = deterministic ~sell-through buffer (no receipt history yet).
+                # Planning: placeholder 0 — Pass 1b sets correct target-WOS receipts.
                 if is_past or is_ongoing:
-                    receipt_units = round(units * 1.1 * random.uniform(0.8, 1.2))
+                    receipt_units = (round(units * 1.1) if shape is not None
+                                     else round(units * 1.1 * random.uniform(0.8, 1.2)))
                 else:
                     receipt_units = 0
                 eop = max(0, current_bop - units + receipt_units)
                 bop[ch] = eop
 
-                actual_units   = round(units * random.uniform(0.78, 1.08)) if is_past else 0
+                if shape is not None:
+                    actual_units = units if is_past else 0   # history units ARE the actuals
+                else:
+                    actual_units = round(units * random.uniform(0.78, 1.08)) if is_past else 0
                 actual_dollars = round(actual_units * aur, 2)
                 actual_cost    = round(actual_units * m["auc"], 2)
                 md_units   = round(units * dr)
@@ -625,6 +700,10 @@ def generate_wp_data(hierarchies=None) -> List[Dict]:
         m  = HIERARCHY_METRICS[hc]
         air, auc = m["air"], m["auc"]
         for ch in CHANNELS:
+            # History streams set forward-week discounts in the main loop (from the
+            # seed's LY/LLY discount), so skip them here — leave those values intact.
+            if _stream_has_history(hc, ch):
+                continue
             stream = [r for r in rows if r["hierarchy_code"] == hc and r["channel"] == ch]
             actual_drs = [r["written_dr_perc"] for r in stream if r["actualised"]]
             avg_ty = round(sum(actual_drs) / len(actual_drs), 4) if actual_drs else 0.0
@@ -786,6 +865,27 @@ def generate_ty_ly_data() -> List[Dict]:
                 ty_dr  = _dr_perc(week_num, m["peak_week"])
                 ly_dr  = _LY_DISC.get((h["l1_name"], hc, ch, week_num), ty_dr)
                 lly_dr = _LLY_DISC.get((h["l1_name"], hc, ch, week_num), ty_dr)
+                # History stream: override the RNG draws above with the seed's real
+                # TY/LY/LLY units + discount (RNG still drew, so no-history is unchanged).
+                if _stream_has_history(hc, ch):
+                    _hu = _SEED.history_units(hc, ch, "TY", week_num)
+                    if _hu is not None:
+                        ty_units = int(_hu)
+                        _hd = _SEED.history_discount(hc, ch, "TY", week_num)
+                        if _hd is not None:
+                            ty_dr = _hd
+                    _hu = _SEED.history_units(hc, ch, "LY", week_num)
+                    if _hu is not None:
+                        ly_units = int(_hu)
+                        _hd = _SEED.history_discount(hc, ch, "LY", week_num)
+                        if _hd is not None:
+                            ly_dr = _hd
+                    _hu = _SEED.history_units(hc, ch, "LLY", week_num)
+                    if _hu is not None:
+                        lly_units = int(_hu)
+                        _hd = _SEED.history_discount(hc, ch, "LLY", week_num)
+                        if _hd is not None:
+                            lly_dr = _hd
                 ty_dollars = round(ty_units * m["air"] * (1 - ty_dr), 2)
                 ly_dollars = round(ly_units * m["air"] * (1 - ly_dr), 2)
                 lly_dollars = round(lly_units * m["air"] * (1 - lly_dr), 2)

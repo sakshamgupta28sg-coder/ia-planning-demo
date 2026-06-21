@@ -31,6 +31,11 @@ _CATALOG_COLS = {
 }
 _SUPPLY_COLS = {"hierarchy_code", "open_wos", "commit_through", "commit_mult"}
 _BUDGET_COLS = {"hierarchy_code", "channel", "budget"}
+# sales_history.csv is OPTIONAL. Present → the SKUs it covers use real actuals +
+# an LY-seasonal reforecast for forward weeks; absent (or a SKU not in it) → the
+# parametric peak_week/peak_units curve drives sales as before.
+_HISTORY_COLS = {"hierarchy_code", "channel", "year_type", "week_num", "units", "discount_perc"}
+_YEAR_TYPES = ("TY", "LY", "LLY")
 
 
 class SeedError(ValueError):
@@ -51,6 +56,23 @@ class SeedData:
         self.descriptors: Dict[int, Tuple] = {}    # Old SKUs (color, size)
         self.old_activation: Optional[int] = None
         self.old_deactivation: Optional[int] = None
+        # Sales history (optional). (hc, ch, year_type, week_num) → {"units", "discount"}.
+        # Empty when sales_history.csv is absent — callers then use the parametric curve.
+        self.sales_history: Dict[Tuple[int, str, str, int], Dict] = {}
+
+    def has_history(self, hc: int, ch: str) -> bool:
+        """True if any LY/LLY/TY history exists for this stream (→ reforecast eligible)."""
+        return any((hc, ch, yt, wn) in self.sales_history
+                   for yt in _YEAR_TYPES for wn in range(1, 54))
+
+    def history_units(self, hc: int, ch: str, year_type: str, week_num: int):
+        """Units for a stream/year/week, or None if not provided."""
+        rec = self.sales_history.get((hc, ch, year_type, week_num))
+        return rec["units"] if rec else None
+
+    def history_discount(self, hc: int, ch: str, year_type: str, week_num: int):
+        rec = self.sales_history.get((hc, ch, year_type, week_num))
+        return rec["discount"] if rec else None
 
 
 def _num(s: str):
@@ -160,5 +182,27 @@ def load_seed(seeds_dir: str) -> Optional[SeedData]:
         if ch not in CHANNELS:
             raise SeedError(f"budgets.csv hc {hc}: channel must be one of {CHANNELS}, got {ch!r}")
         sd.budgets[(hc, ch)] = _num(r["budget"])
+
+    # Optional sales history.
+    hist_path = os.path.join(seeds_dir, "sales_history.csv")
+    if os.path.isfile(hist_path):
+        for r in _read(hist_path, _HISTORY_COLS, "sales_history.csv"):
+            hc = _num(r["hierarchy_code"])
+            ch = (r["channel"] or "").strip()
+            yt = (r["year_type"] or "").strip().upper()
+            wn = _num(r["week_num"])
+            if hc not in seen_hc:
+                raise SeedError(f"sales_history.csv: hierarchy_code {hc} not in catalog")
+            if ch not in CHANNELS:
+                raise SeedError(f"sales_history.csv hc {hc}: channel must be one of {CHANNELS}, got {ch!r}")
+            if yt not in _YEAR_TYPES:
+                raise SeedError(f"sales_history.csv hc {hc}: year_type must be one of {_YEAR_TYPES}, got {yt!r}")
+            if not isinstance(wn, int) or not (1 <= wn <= 53):
+                raise SeedError(f"sales_history.csv hc {hc}: week_num must be 1..53, got {r['week_num']!r}")
+            units = _num(r["units"])
+            disc = _num(r["discount_perc"])
+            if units is None or units < 0:
+                raise SeedError(f"sales_history.csv hc {hc} {ch} {yt} wk {wn}: units must be >= 0")
+            sd.sales_history[(hc, ch, yt, wn)] = {"units": units, "discount": disc or 0.0}
 
     return sd
