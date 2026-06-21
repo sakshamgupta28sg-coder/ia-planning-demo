@@ -12,6 +12,7 @@ const NAV = [
   { href: "/wp", label: "Working Plan" },
   { href: "/master", label: "Master SKU" },
   { href: "/placeholders", label: "Placeholders" },
+  { href: "/admin", label: "Data Import" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

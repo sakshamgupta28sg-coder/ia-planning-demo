@@ -22,6 +22,13 @@ const CARDS = [
     color: "border-amber-500",
     badge: "WHATIF",
   },
+  {
+    href: "/admin",
+    title: "Data Import",
+    desc: "Upload your own catalog, supply, budgets, and sales history as CSV. Validated before saving — run the tool on your own products instead of the demo data.",
+    color: "border-purple-500",
+    badge: "CSV",
+  },
 ];
 
 export default function Home() {

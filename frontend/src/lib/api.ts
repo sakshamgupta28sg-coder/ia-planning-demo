@@ -328,3 +328,16 @@ export async function renameSnapshotAPI(snap_id: number, name: string) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function fetchSeedStatus() {
+  const res = await fetch(`${BASE}/admin/seed-status`, { cache: "no-store" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function uploadSeeds(form: FormData) {
+  const res = await fetch(`${BASE}/admin/upload-seeds`, { method: "POST", body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || (await res.text()) || "Upload failed");
+  return data;
+}

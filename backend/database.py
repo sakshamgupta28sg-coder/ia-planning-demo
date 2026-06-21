@@ -10,7 +10,7 @@ import json
 import os
 from typing import Dict, List, Optional
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "planning.db")
+DB_PATH = os.environ.get("IA_DB_PATH", os.path.join(os.path.dirname(__file__), "planning.db"))
 
 
 def _conn() -> sqlite3.Connection:
