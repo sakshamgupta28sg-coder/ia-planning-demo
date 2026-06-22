@@ -73,13 +73,37 @@ WAREHOUSE_SUB_CHANNELS = {
     "Store": "Store_warehouse",
 }
 
+# ── The clock anchors everything: "now" → the whole year window ───────────────
+# Pinned to FY2026-wk20 by default so the demo is byte-stable; opt into a live
+# clock with IA_LIVE_CLOCK (then "now" = today's real fiscal week/year). The
+# selectable-year window, fiscal calendar span, plan-generation years and the
+# TY/LY/LLY rollover all DERIVE from the now-year below — so when the clock moves
+# into a new year, the window rolls forward automatically (2026→27→28 becomes
+# 2027→28→29, with last year/two-years-ago shifting in lockstep). No literal
+# year lists to bump. Derived from date.today().year (not the calendar) so there's
+# no chicken-and-egg with the calendar that fiscal_week_for_date() reads.
+# Default pin = FY2026-wk20. Override with IA_PINNED_WEEK (e.g. 202720) to demo a
+# different "now" without a live clock — both the now-year and CURRENT_WEEK derive
+# from it, so the whole window stays consistent.
+_PINNED_CURRENT_WEEK = int(os.getenv("IA_PINNED_WEEK", "202620"))
+
+
+def _resolve_now_year() -> int:
+    if os.getenv("IA_LIVE_CLOCK"):
+        return date.today().year      # fiscal year ≈ calendar year in this 52-wk seed
+    return _PINNED_CURRENT_WEEK // 100
+
+
+_NOW_YEAR = _resolve_now_year()
+
 # ── Fiscal calendar (real-retail shape, simple 52-week seed) ──────────────────
-# Backbone for date↔week mapping and cross-year week math. Spans 2024–2028.
-# Schema deliberately carries fiscal_month / fiscal_quarter and tolerates a 53rd
-# week so a true 4-5-4 NRF calendar (incl. 53-week years) can be swapped in later
-# WITHOUT a schema change. Seed here is simple: every year = 52 weeks, week 1
-# anchored to the first Monday on/after Jan 1, each week = +7 days, 4-5-4 months.
-FISCAL_CALENDAR_YEARS = [2024, 2025, 2026, 2027, 2028]
+# Backbone for date↔week mapping and cross-year week math. Spans now-2 … now+2:
+# now+2 is the furthest selectable year (TY), now-2 is the oldest comparison year
+# (LLY of the current year). Schema carries fiscal_month / fiscal_quarter and
+# tolerates a 53rd week so a true 4-5-4 NRF calendar can be swapped in later
+# WITHOUT a schema change. Seed: every year = 52 weeks, week 1 anchored to the
+# first Monday on/after Jan 1, each week = +7 days, 4-5-4 months.
+FISCAL_CALENDAR_YEARS = list(range(_NOW_YEAR - 2, _NOW_YEAR + 3))
 
 
 def _build_fiscal_calendar() -> tuple:
@@ -125,13 +149,9 @@ def fiscal_week_for_date(d: date) -> int:
     return FISCAL_CALENDAR[-1]["week_code"]
 
 
-# Active "now". The engine reads CURRENT_WEEK throughout. It stays pinned to 202620
-# by default so existing behavior is byte-identical; the live clock is opt-in via the
-# IA_LIVE_CLOCK env flag (wired to the UI year selector in a later phase). Resolving it
-# through one function keeps every reader consistent.
-_PINNED_CURRENT_WEEK = 202620
-
-
+# Active "now". The engine reads CURRENT_WEEK throughout. Pinned to 202620 by
+# default (byte-identical demo); IA_LIVE_CLOCK opts into today's real fiscal week.
+# _PINNED_CURRENT_WEEK + _NOW_YEAR are defined above (the calendar span needs them).
 def resolve_current_week() -> int:
     """Pinned 202620 unless IA_LIVE_CLOCK is set, then today's real fiscal week."""
     if os.getenv("IA_LIVE_CLOCK"):
@@ -139,9 +159,10 @@ def resolve_current_week() -> int:
     return _PINNED_CURRENT_WEEK
 
 
-# Selectable planning years: the current season + the next two (view-only future).
-DEFAULT_YEAR = 2026
-SELECTABLE_YEARS = [2026, 2027, 2028]
+# Selectable planning years: the current season + the next two (view-only future),
+# all derived from the clock's now-year so the window rolls forward automatically.
+DEFAULT_YEAR = _NOW_YEAR
+SELECTABLE_YEARS = [_NOW_YEAR, _NOW_YEAR + 1, _NOW_YEAR + 2]
 
 
 def _year_weeks(year: int) -> List[int]:
@@ -931,8 +952,8 @@ def generate_ty_ly_data() -> List[Dict]:
                     "l2_name": h["l2_name"],
                     "channel": ch,
                     "current_week": wk,
-                    "compared_week":     int(str(wk).replace("2026", "2025")),
-                    "compared_week_lly": int(str(wk).replace("2026", "2024")),
+                    "compared_week":     wk - 100,   # same week, prior year
+                    "compared_week_lly": wk - 200,   # same week, two years prior
                     "ty_units": ty_units,
                     "ly_units": ly_units,
                     "lly_units": lly_units,
