@@ -74,24 +74,47 @@ WAREHOUSE_SUB_CHANNELS = {
 }
 
 # ── The clock anchors everything: "now" → the whole year window ───────────────
-# Pinned to FY2026-wk20 by default so the demo is byte-stable; opt into a live
-# clock with IA_LIVE_CLOCK (then "now" = today's real fiscal week/year). The
-# selectable-year window, fiscal calendar span, plan-generation years and the
-# TY/LY/LLY rollover all DERIVE from the now-year below — so when the clock moves
-# into a new year, the window rolls forward automatically (2026→27→28 becomes
-# 2027→28→29, with last year/two-years-ago shifting in lockstep). No literal
-# year lists to bump. Derived from date.today().year (not the calendar) so there's
-# no chicken-and-egg with the calendar that fiscal_week_for_date() reads.
-# Default pin = FY2026-wk20. Override with IA_PINNED_WEEK (e.g. 202720) to demo a
-# different "now" without a live clock — both the now-year and CURRENT_WEEK derive
-# from it, so the whole window stays consistent.
-_PINNED_CURRENT_WEEK = int(os.getenv("IA_PINNED_WEEK", "202620"))
+# "Now" is the in-flight week = the boundary between actuals and plan. By DEFAULT,
+# when a stream's history is uploaded, this is DATA-DRIVEN: now = the week after the
+# latest actual in sales_history.csv. So the boundary always matches the data the SMB
+# has actually loaded — upload more weeks and "now" advances; cross a year and the
+# whole window (selectable years, calendar span, plan-gen years, TY/LY/LLY rollover)
+# rolls forward, because all of those derive from the now-year below.
+#
+# Precedence:  IA_PINNED_WEEK (explicit, e.g. 202720 — demos / tests)
+#            → IA_LIVE_CLOCK  (wall-clock: today's real fiscal week)
+#            → DATA           (last uploaded actual + 1)   ← default for an SMB pilot
+#            → 202620         (no data, no clock: the byte-stable demo fixture)
+#
+# Year-level resolution avoids the calendar (no chicken-and-egg with
+# fiscal_week_for_date, which reads FISCAL_CALENDAR built just below).
+_DEFAULT_NOW_WEEK = 202620
+
+
+def _data_latest_actual_week():
+    """Latest fiscal week_code present in uploaded history = the last CLOSED actual.
+    None when there's no history (the demo) → clock falls back to the default/override."""
+    if _SEED is None or not _SEED.sales_history:
+        return None
+    return max(yr * 100 + wn for (_hc, _ch, yr, wn) in _SEED.sales_history)
+
+
+def _next_fiscal_week(wcode: int) -> int:
+    """Week after wcode; wraps wk52 → next year wk1 (simple 52-week seed)."""
+    yr, wn = wcode // 100, wcode % 100
+    return (yr + 1) * 100 + 1 if wn >= 52 else wcode + 1
 
 
 def _resolve_now_year() -> int:
+    explicit = os.getenv("IA_PINNED_WEEK")
+    if explicit:
+        return int(explicit) // 100
     if os.getenv("IA_LIVE_CLOCK"):
         return date.today().year      # fiscal year ≈ calendar year in this 52-wk seed
-    return _PINNED_CURRENT_WEEK // 100
+    last = _data_latest_actual_week()
+    if last is not None:
+        return _next_fiscal_week(last) // 100
+    return _DEFAULT_NOW_WEEK // 100
 
 
 _NOW_YEAR = _resolve_now_year()
@@ -149,14 +172,19 @@ def fiscal_week_for_date(d: date) -> int:
     return FISCAL_CALENDAR[-1]["week_code"]
 
 
-# Active "now". The engine reads CURRENT_WEEK throughout. Pinned to 202620 by
-# default (byte-identical demo); IA_LIVE_CLOCK opts into today's real fiscal week.
-# _PINNED_CURRENT_WEEK + _NOW_YEAR are defined above (the calendar span needs them).
+# Active "now" (in-flight week). Same precedence as _resolve_now_year above; this is
+# the week-level resolution (the live-clock branch needs FISCAL_CALENDAR, built above).
 def resolve_current_week() -> int:
-    """Pinned 202620 unless IA_LIVE_CLOCK is set, then today's real fiscal week."""
+    """IA_PINNED_WEEK → IA_LIVE_CLOCK (real week) → DATA (last actual + 1) → 202620."""
+    explicit = os.getenv("IA_PINNED_WEEK")
+    if explicit:
+        return int(explicit)
     if os.getenv("IA_LIVE_CLOCK"):
         return fiscal_week_for_date(date.today())
-    return _PINNED_CURRENT_WEEK
+    last = _data_latest_actual_week()
+    if last is not None:
+        return _next_fiscal_week(last)
+    return _DEFAULT_NOW_WEEK
 
 
 # Selectable planning years: the current season + the next two (view-only future),
