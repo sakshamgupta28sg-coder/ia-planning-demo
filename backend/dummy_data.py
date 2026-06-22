@@ -1970,6 +1970,18 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
     for key, ovr in _active_ovrs.items():
         if key in buckets:
             buckets[key] = _recalc(buckets[key], ovr)
+            # An edit changes written_sales_* but the LY/LLY comparison columns were
+            # computed above against the pre-edit value — refresh their variances so
+            # TY/LY % and TY/LLY % reflect the new TY (LY/LLY bases are historical).
+            b = buckets[key]
+            for prefix in ("ly", "lly"):
+                bu, bd = b[f"{prefix}_sales_units"], b[f"{prefix}_sales_dollars"]
+                uv = b["written_sales_units"] - bu
+                dv = round(b["written_sales_dollars"] - bd, 2)
+                b[f"{prefix}_units_var"]        = uv
+                b[f"{prefix}_dollars_var"]      = dv
+                b[f"{prefix}_units_var_perc"]   = round(uv / bu, 4) if bu > 0 else 0.0
+                b[f"{prefix}_dollars_var_perc"] = round(dv / bd, 4) if bd > 0 else 0.0
 
     # ── BOP chain propagation + WOS ───────────────────────────────────────────
     # Enforce bop[N+1] = eop[N] and compute WOS with correct denominator:
