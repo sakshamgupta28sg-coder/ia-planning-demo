@@ -466,12 +466,15 @@ export default function WPPage() {
   const hcsKey = [...selectedHcs].sort().join(",");
   const chsKey = [...selectedChannels].sort().join(",");
 
-  // Helper: is a row locked for editing (actualised or in-flight current week)
-  const isLocked = (r: WPRow) => r.actualised || r.is_ongoing;
+  // Helper: is a row locked for editing. Only ACTUALISED (closed) weeks are locked —
+  // the in-flight/ongoing week is editable (its number is a forecast, not a closed
+  // actual), so planners can adjust the week the plan launches from. Backend already
+  // permits it (the edit guard blocks only actualised); this matches that.
+  const isLocked = (r: WPRow) => r.actualised;
   // Rows visible in the weekly table — respects planning-only toggle + week range filter
   const displayRows = rows.filter((r) => {
     // Planning-weeks mode hides PAST actualised weeks but keeps the ongoing/in-flight
-    // week visible (read-only) — it's the current position the plan launches from.
+    // week visible (now editable) — it's the current position the plan launches from.
     if (planningOnly && r.actualised) return false;
     // Focus filter: when multiple combos are selected, optionally show just one.
     // View-only — edits/accept/top-down still target the full selection.

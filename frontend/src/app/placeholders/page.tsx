@@ -463,7 +463,7 @@ export default function PlaceholdersPage() {
                   <tr><td colSpan={16} className="px-3 py-4 text-slate-500">No rows for this channel/year.</td></tr>
                 )}
                 {displayRows.map((r) => {
-                  const locked = r.actualised || r.is_ongoing;
+                  const locked = r.actualised;   // ongoing/in-flight week is editable (forecast, not a closed actual)
                   const risk = Boolean(r._stockout) || r.first_stockout_week != null;
                   return (
                     <tr key={r.current_week} className="border-b border-slate-700/50 hover:brightness-110 transition-colors">
