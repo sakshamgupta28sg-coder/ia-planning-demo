@@ -449,10 +449,14 @@ export default function WPPage() {
   const isFiltered = effectiveHcs.length > 0 || selectedChannels.length > 0;
 
   const [filteredSummary, setFilteredSummary] = useState<Summary | null>(null);
+  const [filteredBaseline, setFilteredBaseline] = useState<Summary | null>(null);
   const [filteredBudget, setFilteredBudget] = useState<BudgetData | null>(null);
   const [filteredSeasonProgress, setFilteredSeasonProgress] = useState<SeasonProgress | null>(null);
 
   const displaySummary        = isFiltered ? filteredSummary        : currentSummary;
+  // Baseline for the edit-impact delta: scoped to the current selection when filtered,
+  // portfolio-wide otherwise. Lets the red/green delta work on a selection too.
+  const displayBaseline       = isFiltered ? filteredBaseline       : baselineSummary;
   const displayBudget         = isFiltered ? filteredBudget         : budgetData;
   const displaySeasonProgress = isFiltered ? filteredSeasonProgress : seasonProgress;
 
@@ -497,8 +501,11 @@ export default function WPPage() {
       const params: Record<string, string> = { year: String(selectedYear) };
       if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
       if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
-      const [fs, fb, fsp] = await Promise.all([fetchWPSummary(params), fetchBudget(params), fetchSeasonProgress(params)]);
+      const [fs, fbase, fb, fsp] = await Promise.all([
+        fetchWPSummary(params), fetchWPSummary({ ...params, baseline: "true" }), fetchBudget(params), fetchSeasonProgress(params),
+      ]);
       setFilteredSummary(fs && Object.keys(fs).length ? fs : null);
+      setFilteredBaseline(fbase && Object.keys(fbase).length ? fbase : null);
       setFilteredBudget(fb);
       setFilteredSeasonProgress(fsp);
     }
@@ -509,6 +516,7 @@ export default function WPPage() {
   const reloadFilteredCards = useCallback(async () => {
     if (!isFiltered) {
       setFilteredSummary(null);
+      setFilteredBaseline(null);
       setFilteredBudget(null);
       setFilteredSeasonProgress(null);
       return;
@@ -516,8 +524,11 @@ export default function WPPage() {
     const params: Record<string, string> = { year: String(selectedYear) };
     if (effectiveHcs.length > 0) params.hierarchy_codes = effectiveHcs.join(",");
     if (selectedChannels.length > 0) params.channels = selectedChannels.join(",");
-    const [s, bud, fsp] = await Promise.all([fetchWPSummary(params), fetchBudget(params), fetchSeasonProgress(params)]);
+    const [s, base, bud, fsp] = await Promise.all([
+      fetchWPSummary(params), fetchWPSummary({ ...params, baseline: "true" }), fetchBudget(params), fetchSeasonProgress(params),
+    ]);
     setFilteredSummary(s && Object.keys(s).length ? s : null);
+    setFilteredBaseline(base && Object.keys(base).length ? base : null);
     setFilteredBudget(bud);
     setFilteredSeasonProgress(fsp);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1263,19 +1274,19 @@ export default function WPPage() {
           {[
             {
               label: isFiltered ? "Selection Sales $" : "Portfolio Sales $", val: fmtD(s.total_written_sales_dollars),
-              delta: !isFiltered && baselineSummary ? <Delta current={s.total_written_sales_dollars} baseline={baselineSummary.total_written_sales_dollars} isDollar /> : null,
+              delta: displayBaseline ? <Delta current={s.total_written_sales_dollars} baseline={displayBaseline.total_written_sales_dollars} isDollar /> : null,
             },
             {
               label: isFiltered ? "Selection GM $" : "Portfolio GM $", val: fmtD(s.total_written_gm_dollar),
-              delta: !isFiltered && baselineSummary ? <Delta current={s.total_written_gm_dollar} baseline={baselineSummary.total_written_gm_dollar} isDollar /> : null,
+              delta: displayBaseline ? <Delta current={s.total_written_gm_dollar} baseline={displayBaseline.total_written_gm_dollar} isDollar /> : null,
             },
             {
               label: "GM %", val: pct(s.avg_written_gm_perc),
-              delta: !isFiltered && baselineSummary ? <Delta current={s.avg_written_gm_perc * 100} baseline={baselineSummary.avg_written_gm_perc * 100} /> : null,
+              delta: displayBaseline ? <Delta current={s.avg_written_gm_perc * 100} baseline={displayBaseline.avg_written_gm_perc * 100} /> : null,
             },
             {
               label: isFiltered ? "Selection Units" : "Portfolio Units", val: fmtU(s.total_written_sales_units),
-              delta: !isFiltered && baselineSummary ? <Delta current={s.total_written_sales_units} baseline={baselineSummary.total_written_sales_units} /> : null,
+              delta: displayBaseline ? <Delta current={s.total_written_sales_units} baseline={displayBaseline.total_written_sales_units} /> : null,
             },
             { label: "Total Cost", val: fmtD(s.total_written_cost ?? 0), delta: null },
             { label: "Total Discount $", val: fmtD(s.total_written_discount_dollars ?? 0), delta: null },

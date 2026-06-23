@@ -213,31 +213,25 @@ def get_wp_summary(
         [channel] if channel else None
     )
 
-    if baseline:
-        rows = [
-            {"written_sales_units": r["written_sales_units"],
-             "written_sales_dollars": r["written_sales_dollars"],
-             "written_gm_dollar": r["written_gm_dollar"],
-             "written_gm_perc": r["written_gm_perc"]}
-            for r in WP_DATA
-            if int(str(r["current_week"])[:4]) == year
-            and (hc_list is None or r["hierarchy_code"] in hc_list)
-            and (ch_list is None or r["channel"] in ch_list)
-        ]
+    # baseline=True → the *unedited* plan: the same engine recompute with the
+    # planner's cell overrides (OO Placed / sales edits) stripped (_overrides_override={}).
+    # This anchors the KPI delta to "your edits", so with zero edits current==baseline
+    # and the delta reads 0. (Was: raw WP_DATA seed, which differs from the recompute
+    # even at zero edits → a permanent, confusing standing delta.)
+    ov = {} if baseline else None
+    if hc_list and ch_list:
+        rows = []
+        for hc in hc_list:
+            for ch in ch_list:
+                rows.extend(get_agg_rows(hc, ch, _overrides_override=ov, year=year))
+    elif hc_list:
+        rows = []
+        for hc in hc_list:
+            rows.extend(get_agg_rows(hc, None, _overrides_override=ov, year=year))
+    elif ch_list:
+        rows = [r for r in get_agg_rows(_overrides_override=ov, year=year) if r["channel"] in ch_list]
     else:
-        if hc_list and ch_list:
-            rows = []
-            for hc in hc_list:
-                for ch in ch_list:
-                    rows.extend(get_agg_rows(hc, ch, year=year))
-        elif hc_list:
-            rows = []
-            for hc in hc_list:
-                rows.extend(get_agg_rows(hc, None, year=year))
-        elif ch_list:
-            rows = [r for r in get_agg_rows(year=year) if r["channel"] in ch_list]
-        else:
-            rows = get_agg_rows(year=year)
+        rows = get_agg_rows(_overrides_override=ov, year=year)
 
     if not rows:
         return {}
