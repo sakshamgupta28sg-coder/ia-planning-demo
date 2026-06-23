@@ -574,11 +574,12 @@ def _level_order_schedule(stream, lead_time, cp):
     order = [0] * n
     if cp <= 0 or lead_time < 0:
         return order
-    isP   = [not s.get("actualised") and not s.get("is_ongoing") for s in stream]
+    # Ongoing week is a planning week → orderable. Only actualized weeks are excluded.
+    isP   = [not s.get("actualised") for s in stream]
     sales = [s.get("written_sales_units", 0) for s in stream]
     ing   = [int(s.get("ingested_receipt_units", 0)) for s in stream]
-    # starting position entering the planning horizon = EOP of the last actual/ongoing week.
-    # A future season has no actual/ongoing week → fall back to the opening BOP of the first
+    # starting position entering the planning horizon = EOP of the last actualized week.
+    # A future season has no actualized week → fall back to the opening BOP of the first
     # planning week (the calibrated opening inventory), not 0.
     initpos = 0
     _anchored = False
@@ -2058,17 +2059,18 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             # Dynamic lock: order placed here would arrive (W+LT) past season end.
             # Recomputed off effective LT every read → never stale after an LT change.
             b["oo_locked"] = (
-                not b.get("actualised") and not b.get("is_ongoing")
+                not b.get("actualised")
                 and _week_offset(b["current_week"], lead_time_s) is None
             )
 
-            # Historical OO Placed display for actualized/ongoing weeks = the
-            # ingested supply that arrived LT weeks LATER (the order this week
-            # produced):  OOP[W] = ingested[W+LT].  Recomputed off EFFECTIVE LT
-            # every read so it stays consistent with the receipt offset after an
-            # LT change (Pass 1c seeds it off base LT; this overrides on read).
-            # Display-only — receipt formula skips actualized/ongoing source OOP.
-            if b.get("actualised") or b.get("is_ongoing"):
+            # Historical OO Placed display for ACTUALIZED weeks = the ingested supply
+            # that arrived LT weeks LATER (the order that week produced):
+            # OOP[W] = ingested[W+LT].  Recomputed off EFFECTIVE LT every read so it
+            # stays consistent with the receipt offset after an LT change.
+            # Display-only — receipt formula skips actualized source OOP. The ONGOING
+            # week is NOT display-only: it's a planning week (orders placed there are
+            # the planner's and land as receipts at W+LT), so it keeps its real OOP.
+            if b.get("actualised"):
                 fwd = stream[i + lead_time_s] if i + lead_time_s < len(stream) else None
                 b["on_order_placed_total_unit"] = (
                     int(fwd.get("ingested_receipt_units", 0)) if fwd else 0
@@ -2087,19 +2089,19 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             # Receipts this week = INGESTED supply baseline + planner orders landing now.
             #   Rcpt[W] = ingested[W] + OOP[W − LT]
             # Ingested is independent backend data; OOP is the planner's orders placed
-            # LT weeks earlier (now arriving). Ongoing week keeps ingested only.
+            # LT weeks earlier (now arriving). Ongoing week is treated as planning.
             units_s = b["written_sales_units"]
-            if not b.get("is_ongoing"):
-                ingested = int(b.get("ingested_receipt_units", 0))
-                src = stream[i - lead_time_s] if i - lead_time_s >= 0 else None
-                # Only use OOP from planning source weeks — actualized/ongoing OOP is
-                # display-only (ingested already carries those historical arrivals).
-                oo_landing = (
-                    int(src.get("on_order_placed_total_unit", 0))
-                    if src is not None and not src.get("actualised") and not src.get("is_ongoing")
-                    else 0
-                )
-                b["total_receipt_units"] = ingested + oo_landing
+            ingested = int(b.get("ingested_receipt_units", 0))
+            src = stream[i - lead_time_s] if i - lead_time_s >= 0 else None
+            # Only use OOP from non-actualized source weeks — actualized OOP is
+            # display-only (ingested already carries those historical arrivals).
+            # The ongoing week's OOP DOES land (it's a planning order).
+            oo_landing = (
+                int(src.get("on_order_placed_total_unit", 0))
+                if src is not None and not src.get("actualised")
+                else 0
+            )
+            b["total_receipt_units"] = ingested + oo_landing
 
             # Propagate BOP
             if prev_eop is not None:
@@ -2121,22 +2123,14 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             wos_s     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
             wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
 
-            if b.get("is_ongoing"):
-                # Ongoing/in-flight week: show current WOS off trailing 4-week actual
-                # sales rate. FC not shown (no forward pipeline meaning mid-week).
-                trail_avg = sum(actual_window) / len(actual_window) if actual_window else 0
-                b["wos"]                = round(b["eop_units"] / trail_avg, 2) if trail_avg > 0 else None
-                b["fwd_coverage_wks"]   = None
-                b["first_stockout_week"] = None
-            else:
-                # WOS = forward weeks of cover for current stock (EOP only), walked
-                # down the real demand curve. Gated on wos_avg_s>0 so terminal weeks
-                # with no forward demand stay None (unchanged from the 8wk-avg form).
-                b["wos"] = _weeks_of_cover(b["eop_units"], i, sales_s, wos_avg_s) if wos_avg_s > 0 else None
-                # FC + first_stockout_week computed in second pass below
-                # (needs full BOP chain propagated first so future eop_units are accurate)
-                b["fwd_coverage_wks"]   = None
-                b["first_stockout_week"] = None
+            # Ongoing + planning weeks both use forward WOS = weeks of cover for
+            # current stock (EOP only), walked down the real demand curve. Gated on
+            # wos_avg_s>0 so terminal weeks with no forward demand stay None.
+            b["wos"] = _weeks_of_cover(b["eop_units"], i, sales_s, wos_avg_s) if wos_avg_s > 0 else None
+            # FC + first_stockout_week computed in second pass below
+            # (needs full BOP chain propagated first so future eop_units are accurate)
+            b["fwd_coverage_wks"]   = None
+            b["first_stockout_week"] = None
 
         # ── Second pass: FC (display) + stockout signals (classification) ────
         # Runs after full BOP chain so future eop_units / _stockout flags are real.
@@ -2157,20 +2151,20 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
         #     A back-loaded receipt (lands wk+14) leaves you dry wks 1-13 even though
         #     FC looks healthy. So exceptions classify off the chain, not off FC.
         for i, b in enumerate(stream):
-            if b.get("actualised") or b.get("is_ongoing"):
+            if b.get("actualised"):
                 continue
             wos_s     = _WOS_DEMAND_INDEX.get((hc_s, ch_s, b["current_week"]), 0)
             wos_avg_s = wos_s / WOS_WINDOW if WOS_WINDOW > 0 else 0
 
             # pipeline = PLANNER orders in transit = OOP placed in the last LT weeks
             # (weeks i-LT+1 .. i), which arrive over the next LT weeks. Not received yet.
-            # Exclude actualized/ongoing rows — their OOP is display-only (historical
-            # orders already captured in ingested supply). Only planning OOP counts.
+            # Exclude only actualized rows — their OOP is display-only (historical
+            # orders already in ingested supply). Ongoing + planning OOP both count.
             lo = max(0, i - lead_time_s + 1)
             pipeline = sum(
                 px.get("on_order_placed_total_unit", 0)
                 for px in stream[lo : i + 1]
-                if not px.get("actualised") and not px.get("is_ongoing")
+                if not px.get("actualised")
             )
             # FC = forward weeks of cover for stock + in-transit pipeline, walked down
             # the real demand curve (same method as WOS). Walking the curve is what
@@ -2232,7 +2226,7 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
         # the locked tail (0 unmet-demand stockout across all SKU×channel streams).
         sched = _level_order_schedule(stream, lead_time_s, cp_s)
         for i, b in enumerate(stream):
-            if b.get("actualised") or b.get("is_ongoing") or b.get("oo_locked"):
+            if b.get("actualised") or b.get("oo_locked"):
                 b["recomm_receipt_units"] = 0   # locked: order here can't be received in season
                 continue
             # Marginal = gap from the leveled target to what's already on order. Accept walks

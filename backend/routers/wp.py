@@ -299,7 +299,7 @@ def get_portfolio(year: int = DEFAULT_YEAR):
         # runout — NOT raw coverage. Coverage min/max kept only for the displayed
         # number + excess (overstock) detection. This stops thin-but-planned tail
         # runout from false-flagging critical (e.g. Sandals).
-        if not r.get("actualised") and not r.get("is_ongoing"):
+        if not r.get("actualised"):
             cov = r.get("fwd_coverage_wks") if r.get("fwd_coverage_wks") is not None else r.get("wos")
             if cov is not None:
                 per_hc[hc]["_planning_coverages"].append(cov)
