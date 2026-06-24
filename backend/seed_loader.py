@@ -40,6 +40,11 @@ _BUDGET_COLS = {"hierarchy_code", "channel", "budget"}
 # LLY=Y-2, pulling a week from the file when it is actualised and present, else from
 # that year's WP forecast. (Relative labels only made sense for one "current year".)
 _HISTORY_COLS = {"hierarchy_code", "channel", "year", "week_num", "units", "discount_perc"}
+# forecast.csv is OPTIONAL. Present → for the UNACTUALISED weeks it covers, the
+# planner-supplied expected_sales_units replaces the reforecast/curve guess and
+# oo_placed pre-loads the order plan (lands as receipts at W+LT, like a grid edit).
+# Same absolute-year keying as sales_history. Any cell absent → engine forecast.
+_FORECAST_COLS = {"hierarchy_code", "channel", "year", "week_num", "expected_sales_units", "oo_placed"}
 _MIN_YEAR, _MAX_YEAR = 2000, 2100
 
 
@@ -66,10 +71,17 @@ class SeedData:
         self.sales_history: Dict[Tuple[int, str, int, int], Dict] = {}
         # Set of (hc, ch) streams that have ANY history row — fast has_history().
         self._history_streams: set = set()
+        # Optional explicit forecast (forecast.csv). (hc, ch, year:int, week_num) →
+        # {"units": int|None, "oo_placed": int}. Used for UNACTUALISED weeks only.
+        self.forecast: Dict[Tuple[int, str, int, int], Dict] = {}
 
     def has_history(self, hc: int, ch: str) -> bool:
         """True if any-year history exists for this stream (→ reforecast eligible)."""
         return (hc, ch) in self._history_streams
+
+    def forecast_cell(self, hc: int, ch: str, year: int, week_num: int):
+        """Explicit forecast row for a stream / absolute year / week, or None."""
+        return self.forecast.get((hc, ch, year, week_num))
 
     def history_units(self, hc: int, ch: str, year: int, week_num: int):
         """Units for a stream / absolute calendar year / week, or None if absent."""
@@ -211,5 +223,32 @@ def load_seed(seeds_dir: str) -> Optional[SeedData]:
                 raise SeedError(f"sales_history.csv hc {hc} {ch} {yr} wk {wn}: units must be >= 0")
             sd.sales_history[(hc, ch, yr, wn)] = {"units": units, "discount": disc or 0.0}
             sd._history_streams.add((hc, ch))
+
+    # Optional explicit forecast for unactualised weeks.
+    fc_path = os.path.join(seeds_dir, "forecast.csv")
+    if os.path.isfile(fc_path):
+        for r in _read(fc_path, _FORECAST_COLS, "forecast.csv"):
+            hc = _num(r["hierarchy_code"])
+            ch = (r["channel"] or "").strip()
+            yr = _num(r["year"])
+            wn = _num(r["week_num"])
+            if hc not in seen_hc:
+                raise SeedError(f"forecast.csv: hierarchy_code {hc} not in catalog")
+            if ch not in CHANNELS:
+                raise SeedError(f"forecast.csv hc {hc}: channel must be one of {CHANNELS}, got {ch!r}")
+            if not isinstance(yr, int) or not (_MIN_YEAR <= yr <= _MAX_YEAR):
+                raise SeedError(f"forecast.csv hc {hc}: year must be an integer {_MIN_YEAR}..{_MAX_YEAR}, got {r['year']!r}")
+            if not isinstance(wn, int) or not (1 <= wn <= 53):
+                raise SeedError(f"forecast.csv hc {hc}: week_num must be 1..53, got {r['week_num']!r}")
+            units = _num(r["expected_sales_units"])   # blank → None → keep engine forecast
+            oop   = _num(r["oo_placed"])               # blank → None → 0
+            if units is not None and units < 0:
+                raise SeedError(f"forecast.csv hc {hc} {ch} {yr} wk {wn}: expected_sales_units must be >= 0")
+            if oop is not None and oop < 0:
+                raise SeedError(f"forecast.csv hc {hc} {ch} {yr} wk {wn}: oo_placed must be >= 0")
+            sd.forecast[(hc, ch, yr, wn)] = {
+                "units": int(units) if units is not None else None,
+                "oo_placed": int(oop) if oop is not None else 0,
+            }
 
     return sd

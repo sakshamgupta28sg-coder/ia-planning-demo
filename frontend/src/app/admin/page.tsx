@@ -12,6 +12,8 @@ type Status = {
   budget_rows?: number;
   has_history: boolean;
   history_streams?: number;
+  has_forecast?: boolean;
+  forecast_rows?: number;
   note?: string;
 };
 
@@ -20,6 +22,7 @@ const FILES: { key: string; label: string; required: boolean; hint: string }[] =
   { key: "supply", label: "supply.csv", required: true, hint: "Opening stock + commit posture" },
   { key: "budgets", label: "budgets.csv", required: true, hint: "OTB budget per SKU × channel" },
   { key: "sales_history", label: "sales_history.csv", required: false, hint: "Optional: real TY / LY / LLY sales" },
+  { key: "forecast", label: "forecast.csv", required: false, hint: "Optional: expected sales units + OO Placed for future (unactualised) weeks" },
 ];
 
 export default function AdminPage() {
@@ -78,6 +81,7 @@ export default function AdminPage() {
         setResult(
           `Live. ${skus} SKUs loaded` +
             (data.has_history ? ` with ${data.history_rows} history rows` : "") +
+            (data.has_forecast ? ` + ${data.forecast_rows} forecast rows` : "") +
             `. Open the Working Plan to see your data.`
         );
       } else {
@@ -116,6 +120,7 @@ export default function AdminPage() {
               {status.has_history
                 ? `history for ${status.history_streams} streams`
                 : "no sales history (parametric curve)"}
+              {status.has_forecast ? ` · ${status.forecast_rows} forecast rows` : ""}
               <div className="text-slate-500 text-xs mt-1 font-mono">{status.seeds_dir}</div>
             </div>
           )
@@ -152,7 +157,7 @@ export default function AdminPage() {
           >
             {busy ? "Working…" : "Upload & Apply"}
           </button>
-          <span className="text-xs text-slate-500">catalog, supply, budgets required · sales_history optional</span>
+          <span className="text-xs text-slate-500">catalog, supply, budgets required · sales_history, forecast optional</span>
         </div>
         {phase && <div className="text-sm text-blue-300 animate-pulse">{phase}</div>}
       </div>
@@ -172,8 +177,9 @@ export default function AdminPage() {
       )}
 
       <p className="mt-6 text-xs text-slate-600">
-        Need the format? See <span className="font-mono">backend/seeds/README.md</span> and{" "}
-        <span className="font-mono">sales_history.csv.template</span>.
+        Need the format? See <span className="font-mono">backend/seeds/README.md</span>,{" "}
+        <span className="font-mono">sales_history.csv.template</span> and{" "}
+        <span className="font-mono">forecast.csv.template</span>.
       </p>
     </div>
   );

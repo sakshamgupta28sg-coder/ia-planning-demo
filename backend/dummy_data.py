@@ -456,6 +456,21 @@ def _history_cell_units(hc: int, ch: str, week_num: int, is_actual: bool, shape)
     return round(weights.get(week_num, 0.0) * total)
 
 
+def _forecast_override(hc: int, ch: str, wk: int):
+    """Explicit forecast (forecast.csv) for an unactualised cell → (units|None, oo_placed).
+
+    units None → keep the engine forecast; oo_placed defaults 0. (None, 0) when there's
+    no file / no row, so a corpus without forecast.csv is byte-identical.
+    """
+    if _SEED is None:
+        return None, 0
+    fc = _SEED.forecast_cell(hc, ch, wk // 100, wk % 100)
+    if not fc:
+        return None, 0
+    u = fc.get("units")
+    return (int(u) if u is not None else None), int(fc.get("oo_placed") or 0)
+
+
 def _build_history_discounts() -> tuple:
     """Seed LY + LLY actual discount per (l1_category, hc, channel, week_num)."""
     ly: Dict[tuple, float] = {}
@@ -578,6 +593,12 @@ def _level_order_schedule(stream, lead_time, cp):
     isP   = [not s.get("actualised") for s in stream]
     sales = [s.get("written_sales_units", 0) for s in stream]
     ing   = [int(s.get("ingested_receipt_units", 0)) for s in stream]
+    # Orders the planner has ALREADY placed are supply too: OOP at planning week p
+    # arrives at p+LT. Credit those arrivals in need() so the schedule fills only the
+    # genuine shortfall — otherwise it re-orders on top of orders already in the plan
+    # (seeded via forecast.csv or hand-placed in a week the schedule didn't pick).
+    oop   = [int(s.get("on_order_placed_total_unit", 0)) if isP[i] else 0
+             for i, s in enumerate(stream)]
     # starting position entering the planning horizon = EOP of the last actualized week.
     # A future season has no actualized week → fall back to the opening BOP of the first
     # planning week (the calibrated opening inventory), not 0.
@@ -597,8 +618,16 @@ def _level_order_schedule(stream, lead_time, cp):
         if isP[w]:
             sd += sales[w]; si += ing[w]
         cum_d[w] = sd; cum_i[w] = si
+    # Cumulative already-placed-OOP arrivals by week w (order at p lands at p+LT).
+    cum_o = [0] * n; so = 0
+    arr = [0] * n
+    for p in range(n):
+        if oop[p] and (p + lead_time) < n:
+            arr[p + lead_time] += oop[p]
+    for w in range(n):
+        so += arr[w]; cum_o[w] = so
     def need(w):
-        return max(0, cum_d[w] - initpos - cum_i[w])
+        return max(0, cum_d[w] - initpos - cum_i[w] - cum_o[w])
     R = {j: need(min(j + lead_time, n - 1)) for j in orderable}
     R[orderable[-1]] = need(n - 1)              # last orderable week must cover the tail
     M = float(cp); cnt = 0
@@ -698,6 +727,17 @@ def generate_wp_data(hierarchies=None) -> List[Dict]:
                     curve = _seasonal_curve(week_num, m["peak_week"])
                     dr    = _dr_perc(week_num, m["peak_week"])
                     units = round(m["peak_units"] * CHANNEL_SPLIT[ch] * curve * random.uniform(0.9, 1.1))
+
+                # Optional explicit forecast (forecast.csv) for UNACTUALISED weeks:
+                # planner-supplied expected_sales_units replaces the reforecast/curve
+                # guess; oo_placed pre-loads the order plan (lands as receipts at W+LT
+                # via the normal OOP chain). Absent cell / no file → engine forecast
+                # unchanged (so a corpus without forecast.csv is byte-identical).
+                seed_oop = 0
+                if not is_past:
+                    _fc_units, seed_oop = _forecast_override(hc, ch, wk)
+                    if _fc_units is not None:
+                        units = _fc_units
                 aur   = round(m["air"] * (1 - dr), 2)
                 sales_dollars = round(aur * units, 2)
                 sales_cost    = round(m["auc"] * units, 2)
@@ -747,7 +787,7 @@ def generate_wp_data(hierarchies=None) -> List[Dict]:
                     "eop_units":              eop,
                     "bop_cost":               round(current_bop * m["auc"], 2),
                     "eop_cost":               round(eop * m["auc"], 2),
-                    "on_order_placed_total_unit": 0,               # planner's NEW orders only (0 at baseline)
+                    "on_order_placed_total_unit": seed_oop,        # 0 at baseline, or forecast.csv oo_placed (unactualised)
                     "total_receipt_units":    receipt_units,       # derived in chain (ingested + OOP[W-LT])
                     "ingested_receipt_units": receipt_units,       # INDEPENDENT supply baseline (immutable)
                     "oo_locked":              False,  # set in remap pass (tail weeks)
@@ -872,7 +912,7 @@ def generate_wp_data(hierarchies=None) -> List[Dict]:
                 # This committed-buy receipt schedule IS the ingested supply baseline.
                 r["total_receipt_units"]         = receipt
                 r["ingested_receipt_units"]      = receipt   # independent supply (immutable)
-                r["on_order_placed_total_unit"]  = 0         # planner places orders ON TOP
+                r["on_order_placed_total_unit"]  = _forecast_override(hc, ch, wk)[1]   # forecast.csv plan (else 0); planner orders ON TOP
                 r["eop_units"] = eop
                 r["eop_cost"]  = round(eop * m["auc"], 2)
                 prev_eop = eop
@@ -2229,11 +2269,12 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             if b.get("actualised") or b.get("oo_locked"):
                 b["recomm_receipt_units"] = 0   # locked: order here can't be received in season
                 continue
-            # Marginal = gap from the leveled target to what's already on order. Accept walks
-            # weeks chronologically and sets OOP = this, reproducing the schedule from a clean
-            # baseline; a re-read then returns 0 (idempotent). Column == what Accept places.
-            on_order = int(b.get("on_order_placed_total_unit", 0))
-            b["recomm_receipt_units"] = max(0, int(sched[i]) - on_order)
+            # sched already nets already-placed OOP (credited as supply in need()), so it IS
+            # the residual buy to place this week — no extra per-week subtraction (that would
+            # double-credit OOP and miss orders placed in other weeks). Accept sets OOP = this;
+            # those arrivals then satisfy need() on a re-read → recomm 0 (idempotent). At the
+            # baseline (OOP = 0) this equals the old `sched − 0`, so demo output is unchanged.
+            b["recomm_receipt_units"] = max(0, int(sched[i]))
 
     _apply_newsku_disc_borrow(buckets.values(), _active_ovrs)
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))

@@ -21,6 +21,7 @@ To point the tool at a different folder (e.g. a customer's data), set
 | `supply.csv` | **yes** | SKU | buy posture (opening stock + commit) |
 | `budgets.csv` | **yes** | SKU × channel | open-to-buy dollar budget |
 | `sales_history.csv` | optional | SKU × channel × year × week | real per-year actuals (absolute year) |
+| `forecast.csv` | optional | SKU × channel × year × week | explicit plan for FUTURE weeks: expected sales units + OO Placed |
 
 Channels are fixed: `Ecom`, `Indirect`, `Store`.
 
@@ -84,3 +85,28 @@ hierarchy_code,channel,year,week_num,units,discount_perc
   file keeps the parametric curve.
 
 See `sales_history.csv.template` for a starter you can rename to `sales_history.csv`.
+
+## forecast.csv (optional)
+
+```
+hierarchy_code,channel,year,week_num,expected_sales_units,oo_placed
+60001,Ecom,2026,32,110,200
+60001,Ecom,2026,33,120,0
+60001,Ecom,2027,32,121,0
+```
+
+Hand the tool YOUR plan for the **future (unactualised)** weeks instead of letting it
+guess (reforecast off last year, or the parametric curve):
+
+- `expected_sales_units` — the initial landing forecast for that week (replaces the
+  engine guess). **Blank** → keep the engine forecast for that one cell.
+- `oo_placed` — orders you plan to place that week; they land as receipts at
+  `week + lead_time`, exactly like typing into the OO Placed column on the grid.
+  Blank/`0` → no order (the planner can still add orders on top).
+- `year` — **absolute calendar year**, same keying as `sales_history.csv`.
+- Only **unactualised** weeks are honored — real actuals always win, so a row for an
+  already-closed week is ignored.
+- The file can be **partial**: any cell you omit falls back to the engine forecast, so
+  pin only the SKUs / weeks you care about.
+
+See `forecast.csv.template` for a starter you can rename to `forecast.csv`.

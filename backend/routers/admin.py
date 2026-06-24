@@ -104,6 +104,8 @@ def seed_status():
         "budget_rows": len(_SEED.budgets),
         "has_history": bool(_SEED.sales_history),
         "history_streams": len(streams_with_history),
+        "has_forecast": bool(_SEED.forecast),
+        "forecast_rows": len(_SEED.forecast),
     }
 
 
@@ -118,6 +120,7 @@ async def upload_seeds(
     supply: UploadFile = File(...),
     budgets: UploadFile = File(...),
     sales_history: Optional[UploadFile] = File(None),
+    forecast: Optional[UploadFile] = File(None),
 ):
     """Validate an uploaded seed set; on success replace the active seeds folder.
 
@@ -133,6 +136,9 @@ async def upload_seeds(
         has_history = sales_history is not None
         if has_history:
             await _save(sales_history, os.path.join(tmp, "sales_history.csv"))
+        has_forecast = forecast is not None
+        if has_forecast:
+            await _save(forecast, os.path.join(tmp, "forecast.csv"))
 
         # Validate the full set exactly as the engine would at startup.
         try:
@@ -152,6 +158,11 @@ async def upload_seeds(
             shutil.copy(os.path.join(tmp, "sales_history.csv"), live_history)
         elif os.path.isfile(live_history):
             os.remove(live_history)
+        live_forecast = os.path.join(SEEDS_DIR, "forecast.csv")
+        if has_forecast:
+            shutil.copy(os.path.join(tmp, "forecast.csv"), live_forecast)
+        elif os.path.isfile(live_forecast):
+            os.remove(live_forecast)
 
         return {
             "status": "saved",
@@ -159,6 +170,8 @@ async def upload_seeds(
             "budget_rows": len(sd.budgets),
             "has_history": has_history,
             "history_rows": len(sd.sales_history),
+            "has_forecast": has_forecast,
+            "forecast_rows": len(sd.forecast),
             "note": "Seeds saved and validated. Restart the backend to load this data.",
         }
     finally:
