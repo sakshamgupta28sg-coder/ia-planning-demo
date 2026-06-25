@@ -1,11 +1,7 @@
 hierarchy_code,l1_name,l2_name,sku_code,color,size,air,auc,peak_week,peak_units,target_wos,lead_time_weeks,case_pack,safety_weeks,activation_week,deactivation_week,status_seed,tagged_to
-10001,Footwear,Running Shoes,FW-RUN-001,Blue,US 9,119.99,44.0,26,160,6,14,6,2,202401,202852,Old,
-10002,Footwear,Casual Sneakers,FW-CSN-002,White,US 10,89.99,30.0,25,210,6,12,6,2,202401,202852,Old,
-10003,Footwear,Ankle Boots,FW-BOT-003,Black,US 8,154.99,55.0,41,140,8,16,4,3,202401,202852,Old,
-10004,Footwear,Sandals,FW-SND-004,Tan,US 7,64.99,21.0,22,230,5,10,12,1,202401,202852,Old,
-10005,Apparel,Denim Jeans,AP-DNM-005,Indigo,32x32,79.99,27.0,38,280,8,14,12,2,202401,202852,Old,
-10006,Apparel,Graphic Tees,AP-TEE-006,Black,M,34.99,11.0,26,430,6,10,24,2,202401,202852,Old,
-10007,Apparel,Hoodies,AP-HOD-007,Grey,L,69.99,23.0,42,250,8,12,12,3,202401,202852,Old,
-10008,Apparel,Activewear Shorts,AP-ACT-008,Navy,M,44.99,14.0,24,340,5,10,24,1,202401,202852,Old,
-30001,Footwear,Trail Runners,FW-TRL-301,Green,US 9,134.99,48.0,28,150,6,12,6,2,202614,202852,New,10001
-30002,Apparel,Puffer Jacket,AP-PUF-302,Olive,M,99.99,34.0,44,180,8,12,8,2,202624,202852,New,10007
+60001,Tops,Classic Tee,NM-TEE-01,White,M,29.0,9.0,26,500,5,8,24,1,202401,202852,Old,
+60002,Outerwear,Denim Jacket,NM-DNM-02,Indigo,L,119.0,44.0,38,180,8,14,6,2,202401,202852,Old,
+60003,Bottoms,Chino Pants,NM-CHN-03,Khaki,32,69.0,24.0,34,260,6,12,12,2,202401,202852,Old,
+60004,Outerwear,Wool Sweater,NM-WOL-04,Charcoal,M,89.0,33.0,44,200,8,12,6,3,202401,202852,Old,
+60005,Tops,Summer Linen Shirt,NM-LIN-05,Sky,M,59.0,21.0,32,220,5,10,12,2,202614,202852,New,60001
+60006,Outerwear,Puffer Vest,NM-PUF-06,Black,L,99.0,37.0,46,160,8,12,6,3,202624,202852,New,60004

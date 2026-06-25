@@ -2250,17 +2250,29 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
         # per-week cap was tried to spread it — under-ordered into a tail stockout. The
         # leveled schedule spreads the buy across unlocked weeks AND covers every week incl.
         # the locked tail (0 unmet-demand stockout across all SKU×channel streams).
-        sched = _level_order_schedule(stream, lead_time_s, cp_s)
+        sched = _level_order_schedule(stream, lead_time_s, cp_s)   # STABLE target (need ignores OOP)
+        # recomm = cumulative top-up to reach the stable target, crediting OOP placed in ANY
+        # week (forecast.csv seed or hand edits) — not just the same week the schedule picked.
+        # Walk chronologically: keep a running total of (placed OOP + recomm so far); at each
+        # planning week recommend only the shortfall vs the schedule's cumulative target.
+        #   • OOP already covers the target  → recomm 0 (no double-order, even if placed in a
+        #     week the schedule didn't choose — the LT-mismatch / over-supply-on-accept bug).
+        #   • accept adds recomm once → running total hits the target → re-read recomm 0
+        #     (idempotent), and because the target is stable it converges in one pass for any LT.
+        run = 0          # cumulative (placed OOP + recommended) across planning weeks
+        cum_target = 0   # cumulative schedule target across planning weeks
         for i, b in enumerate(stream):
-            if b.get("actualised") or b.get("oo_locked"):
-                b["recomm_receipt_units"] = 0   # locked: order here can't be received in season
+            if b.get("actualised"):
+                b["recomm_receipt_units"] = 0     # display-only OOP; not a future order
                 continue
-            # Marginal = gap from the leveled target (a STABLE position — need() ignores OOP)
-            # to what's already on order. Keeping the target stable is what lets the
-            # chronological Accept converge to it; crediting OOP in need() made the target
-            # shrink mid-accept and under-ordered long-LT SKUs. Re-read after accept → 0.
-            on_order = int(b.get("on_order_placed_total_unit", 0))
-            b["recomm_receipt_units"] = max(0, int(sched[i]) - on_order)
+            cum_target += int(sched[i])           # 0 except at orderable weeks
+            run += int(b.get("on_order_placed_total_unit", 0))
+            if b.get("oo_locked"):
+                b["recomm_receipt_units"] = 0     # can't order here, but its (0) OOP still counted
+                continue
+            rec = max(0, cum_target - run)
+            b["recomm_receipt_units"] = rec
+            run += rec
 
     _apply_newsku_disc_borrow(buckets.values(), _active_ovrs)
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
@@ -2739,39 +2751,35 @@ def _shift_receipts_impl(hcs: List[int], channels: List[str], shift_weeks: int, 
 
 
 def accept_recomm_receipts(hcs: List[int], channels: List[str], year: int = DEFAULT_YEAR) -> int:
-    """Set OO Placed = Recomm Receipt for all planning weeks of given SKUs×channels.
+    """Add the recommended residual to OO Placed for all planning weeks of given SKUs×channels.
 
-    One-click replacement for manually editing OO Placed week-by-week.
-    Returns count of rows updated. Operates on the viewed fiscal year.
+    One-click replacement for manually editing OO Placed week-by-week. Returns count of
+    rows updated. Operates on the viewed fiscal year.
+
+    SINGLE BATCH: read the recomm column ONCE, then set each planning week's
+    OOP = current_OOP + recomm. Recomm already credits already-placed OOP as supply
+    (see `_level_order_schedule.need`), so the column IS the coherent residual plan that
+    covers every week — placing it all at once gives full coverage with no over-supply.
+    (The old chronological re-read loop is wrong now that the target depends on placed OOP:
+    each placement shrank the remaining target → long-LT SKUs under-converged.)
+    A re-read after this returns recomm 0 everywhere (idempotent). Locked weeks never order.
     """
     count = 0
     for hc in hcs:
         for ch in channels:
-            # Walk weeks CHRONOLOGICALLY, re-reading the chain after each accept.
-            # Recomm is chain-aware (computed off the live EOP), so once an order
-            # lands at W+LT and lifts downstream EOP, the downstream recomm shrinks
-            # — and drops to 0 once the season is filled. This is why we can't batch
-            # all weeks at once: a simultaneous accept-all used each week's BASELINE
-            # recomm (blind to the other orders) → every order landed and stacked,
-            # ballooning end-of-season EOP. Iterating converges instead.
-            weeks = sorted(
-                r["current_week"]
+            # SINGLE batch: read the recomm residual once and add it to OOP. Looping would
+            # over-supply — crediting OOP shifts the leveled schedule's preferred weeks each
+            # pass, so repeated passes stack orders. One pass places the coherent residual
+            # plan; any remainder is the inherent long-LT locked-tail edge (a few units that
+            # no order can reach), not worth over-buying to chase.
+            batch = [
+                (r["current_week"], int(r.get("on_order_placed_total_unit", 0)) + int(r["recomm_receipt_units"]))
                 for r in get_agg_rows(hc, ch, year=year)
-                if not r.get("actualised")
-                and not r.get("is_ongoing")
-                and not r.get("oo_locked")
-            )
-            for wk in weeks:
-                fresh = next(
-                    (r for r in get_agg_rows(hc, ch, year=year) if r["current_week"] == wk),
-                    None,
-                )
-                if fresh is None or fresh.get("oo_locked"):
-                    continue
-                recomm = int(fresh.get("recomm_receipt_units", 0))
-                if recomm <= 0:
-                    continue   # already covered — nothing to order this week
-                apply_edit(hc, wk, ch, "on_order_placed_total_unit", float(recomm))
+                if not (r.get("actualised") or r.get("is_ongoing") or r.get("oo_locked"))
+                and int(r.get("recomm_receipt_units", 0)) > 0
+            ]
+            for wk, new_oop in batch:
+                apply_edit(hc, wk, ch, "on_order_placed_total_unit", float(new_oop))
                 count += 1
     return count
 
