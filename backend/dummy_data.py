@@ -593,12 +593,6 @@ def _level_order_schedule(stream, lead_time, cp):
     isP   = [not s.get("actualised") for s in stream]
     sales = [s.get("written_sales_units", 0) for s in stream]
     ing   = [int(s.get("ingested_receipt_units", 0)) for s in stream]
-    # Orders the planner has ALREADY placed are supply too: OOP at planning week p
-    # arrives at p+LT. Credit those arrivals in need() so the schedule fills only the
-    # genuine shortfall — otherwise it re-orders on top of orders already in the plan
-    # (seeded via forecast.csv or hand-placed in a week the schedule didn't pick).
-    oop   = [int(s.get("on_order_placed_total_unit", 0)) if isP[i] else 0
-             for i, s in enumerate(stream)]
     # starting position entering the planning horizon = EOP of the last actualized week.
     # A future season has no actualized week → fall back to the opening BOP of the first
     # planning week (the calibrated opening inventory), not 0.
@@ -618,16 +612,8 @@ def _level_order_schedule(stream, lead_time, cp):
         if isP[w]:
             sd += sales[w]; si += ing[w]
         cum_d[w] = sd; cum_i[w] = si
-    # Cumulative already-placed-OOP arrivals by week w (order at p lands at p+LT).
-    cum_o = [0] * n; so = 0
-    arr = [0] * n
-    for p in range(n):
-        if oop[p] and (p + lead_time) < n:
-            arr[p + lead_time] += oop[p]
-    for w in range(n):
-        so += arr[w]; cum_o[w] = so
     def need(w):
-        return max(0, cum_d[w] - initpos - cum_i[w] - cum_o[w])
+        return max(0, cum_d[w] - initpos - cum_i[w])
     R = {j: need(min(j + lead_time, n - 1)) for j in orderable}
     R[orderable[-1]] = need(n - 1)              # last orderable week must cover the tail
     M = float(cp); cnt = 0
@@ -2269,12 +2255,12 @@ def _agg_rows_impl(hc_filter: int = None, ch_filter: str = None,
             if b.get("actualised") or b.get("oo_locked"):
                 b["recomm_receipt_units"] = 0   # locked: order here can't be received in season
                 continue
-            # sched already nets already-placed OOP (credited as supply in need()), so it IS
-            # the residual buy to place this week — no extra per-week subtraction (that would
-            # double-credit OOP and miss orders placed in other weeks). Accept sets OOP = this;
-            # those arrivals then satisfy need() on a re-read → recomm 0 (idempotent). At the
-            # baseline (OOP = 0) this equals the old `sched − 0`, so demo output is unchanged.
-            b["recomm_receipt_units"] = max(0, int(sched[i]))
+            # Marginal = gap from the leveled target (a STABLE position — need() ignores OOP)
+            # to what's already on order. Keeping the target stable is what lets the
+            # chronological Accept converge to it; crediting OOP in need() made the target
+            # shrink mid-accept and under-ordered long-LT SKUs. Re-read after accept → 0.
+            on_order = int(b.get("on_order_placed_total_unit", 0))
+            b["recomm_receipt_units"] = max(0, int(sched[i]) - on_order)
 
     _apply_newsku_disc_borrow(buckets.values(), _active_ovrs)
     return sorted(buckets.values(), key=lambda x: (x["current_week"], x["hierarchy_code"], x["channel"]))
