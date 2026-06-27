@@ -185,20 +185,22 @@ function MultiSelect({
       </button>
       {open && (
         <div className="absolute top-full mt-1 left-0 z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl min-w-[200px]">
-          {options.map((opt) => (
-            <label
-              key={opt.value}
-              className="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-700 cursor-pointer text-sm text-slate-200 first:rounded-t-lg"
-            >
-              <input
-                type="checkbox"
-                checked={selected.includes(opt.value)}
-                onChange={() => toggle(opt.value)}
-                className="accent-blue-500 w-3.5 h-3.5"
-              />
-              {opt.label}
-            </label>
-          ))}
+          <div className="max-h-80 overflow-y-auto">
+            {options.map((opt) => (
+              <label
+                key={opt.value}
+                className="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-700 cursor-pointer text-sm text-slate-200 first:rounded-t-lg"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.includes(opt.value)}
+                  onChange={() => toggle(opt.value)}
+                  className="accent-blue-500 w-3.5 h-3.5"
+                />
+                {opt.label}
+              </label>
+            ))}
+          </div>
           {selected.length > 0 && (
             <button
               onClick={() => { onChange([]); setOpen(false); }}
