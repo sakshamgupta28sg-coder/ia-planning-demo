@@ -3023,7 +3023,7 @@ def compare_snapshots(snap_a_id: int, snap_b_id: int) -> Dict:
     }
 
 
-def get_exceptions_panel() -> List[Dict]:
+def get_exceptions_panel(year: int = DEFAULT_YEAR) -> List[Dict]:
     """Return one row per SKU×channel showing worst exception (non-ok only).
 
     Groups week-level coverage data into SKU×channel summary rows so the panel
@@ -3033,8 +3033,12 @@ def get_exceptions_panel() -> List[Dict]:
       - excess exceptions   → weeks where coverage genuinely exceeds threshold
     This avoids showing "observation weeks" (weeks from which you notice an
     upcoming problem) and instead shows WHERE the problem occurs.
+
+    Scoped to `year` so the panel matches the year the grid is showing (a panel
+    hardcoded to DEFAULT_YEAR flagged the 2026 stockout while the user viewed a
+    fixed 2027 plan).
     """
-    all_rows = get_agg_rows()
+    all_rows = get_agg_rows(year=year)
     severity_order = {"critical": 0, "low": 1, "excess": 2}
 
     # Pass 1: collect actual problem weeks per combo (what the planner cares about)

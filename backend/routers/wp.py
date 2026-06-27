@@ -584,9 +584,9 @@ def undo_recomm(body: AcceptRecommRequest):
 
 # ── Exception panel ───────────────────────────────────────────────────────────
 @router.get("/exceptions")
-def get_exceptions():
+def get_exceptions(year: int = DEFAULT_YEAR):
     """All planning-week rows with non-ok coverage status, for the exception panel."""
-    return get_exceptions_panel()
+    return get_exceptions_panel(year=year)
 
 
 # ── Audit log ─────────────────────────────────────────────────────────────────

@@ -491,7 +491,7 @@ export default function WPPage() {
   const reloadPortfolioAndSummary = useCallback(async () => {
     const yp = { year: String(selectedYear) };
     const [s, p, ex, bud, sp] = await Promise.all([
-      fetchWPSummary(yp), fetchPortfolio(yp), fetchExceptions(), fetchBudget(yp), fetchSeasonProgress(yp),
+      fetchWPSummary(yp), fetchPortfolio(yp), fetchExceptions(yp), fetchBudget(yp), fetchSeasonProgress(yp),
     ]);
     setCurrentSummary(s);
     setPortfolio(p);

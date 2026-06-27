@@ -263,8 +263,9 @@ export async function compareSnapshots(a: number, b: number) {
   return res.json();
 }
 
-export async function fetchExceptions() {
-  const res = await fetch(`${BASE}/wp/exceptions`, { cache: "no-store" });
+export async function fetchExceptions(params?: Record<string, string>) {
+  const qs = params && Object.keys(params).length ? "?" + new URLSearchParams(params).toString() : "";
+  const res = await fetch(`${BASE}/wp/exceptions${qs}`, { cache: "no-store" });
   return res.json();
 }
 
