@@ -1,0 +1,7 @@
+hierarchy_code,l1_name,l2_name,sku_code,color,size,air,auc,peak_week,peak_units,target_wos,lead_time_weeks,case_pack,safety_weeks,activation_week,deactivation_week,status_seed,tagged_to
+70001,Tops,Crew Tee,QC-TEE-01,White,M,29.0,9.0,30,400,5,8,12,1,202401,202852,Old,
+70002,Bottoms,Straight Trouser,QC-BTM-02,Navy,32,69.0,24.0,34,260,6,8,8,2,202401,202852,Old,
+70003,Outerwear,Field Jacket,QC-OUT-03,Olive,L,119.0,46.0,40,180,8,8,6,2,202401,202852,Old,
+70004,Footwear,Trail Sneaker,QC-FTW-04,Black,M,99.0,38.0,28,220,7,8,8,3,202401,202852,Old,
+70005,Knitwear,Cable Sweater,QC-KNT-05,Stone,M,89.0,35.0,44,160,8,8,6,2,202401,202852,Old,
+70006,Tops,Linen Shirt,QC-LIN-06,Sky,M,59.0,21.0,32,200,5,8,8,2,202614,202852,New,70001
