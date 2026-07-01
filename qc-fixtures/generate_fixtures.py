@@ -133,18 +133,19 @@ write_valid(fresh("F-EARLYPEAK"), early)
 dup=[row[:] for row in cat]; dup[1][2]="Crew Tee"   # 70002 renamed to collide with 70001
 write_valid(fresh("F-DUPNAME"), dup)
 
-# F-FORECAST-LTMISMATCH: forecast oo_placed sized for catalog LT=8; agent then sets a
-# sku_settings LT override (e.g. 4) via PUT /wp/sku-settings to trigger the mismatch.
-ltm=fresh("F-FORECAST-LTMISMATCH"); write_valid(ltm, cat)
-fc=[]
-for r in cat:
-    for ch in CHANNELS:
-        for wn in range(26,50):
-            fc.append([r[0],ch,2026,wn,"",12])   # pre-place OOP every planning week
-write_csv(ltm,"forecast.csv",["hierarchy_code","channel","year","week_num","expected_sales_units","oo_placed"],fc)
+# F-FORECAST-LTMISMATCH: REG-02 guard for the LT-override -> accept path. Load a clean set,
+# cut the catalog LT (8->4) via sku-settings, accept recomm. The OLD engine over-ordered on
+# an LT cut (WOS 40-121); the fixed cumulative-top-up must still produce a sane plan.
+# NOTE: deliberately NO pre-planted oo_placed. A flat oo_placed bakes over-supply into the
+# seed that accept cannot undo (accept only ADDS) -> that tests the seed, not the engine.
+ltm=fresh("F-FORECAST-LTMISMATCH"); write_valid(ltm, cat)   # base_forecast leaves oo_placed=0
 open(os.path.join(ltm,"README.txt"),"w").write(
-    "REG-02: load this, then PUT /wp/sku-settings/70001 {lead_time_weeks:4}. Accept recomm.\n"
-    "Expect: 0 stockout, sane WOS (old code over-supplied WOS 40-121).\n")
+    "REG-02 (LT-override regression guard):\n"
+    "  1. Load this set  (IA_DB_PATH=/tmp/qc.db IA_SEEDS_DIR=qc-fixtures/F-FORECAST-LTMISMATCH)\n"
+    "  2. update_sku_setting(70001, 'lead_time_weeks', 4)   # or PUT /wp/sku-settings/70001 {lead_time_weeks:4}\n"
+    "  3. accept_recomm_receipts([70001], ['Ecom','Indirect','Store'], year=2026)\n"
+    "Assert: 0 stockout AND max WOS < 40 (old code blew up to WOS 40-121).\n"
+    "Validated 2026-07: applied=17, maxWOS=17, stockout=0.\n")
 
 # ── F-MALFORMED/* : each breaks exactly ONE rule ──────────────────────────────
 mroot=fresh("F-MALFORMED")

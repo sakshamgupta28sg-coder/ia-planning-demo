@@ -34,7 +34,7 @@ curl -X POST :PORT/api/admin/upload-seeds \
 | `F-LONGLT` | lead times 12–16 | INV-4 oo_locked, REG-04 long-LT accept, locked-tail |
 | `F-EARLYPEAK` | peak_week 16 (before planning boundary) | over-supply probe (Fix-1 class), WOS-spike checks |
 | `F-DUPNAME` | two SKUs share `l2_name` | SEED-12, ENG-10 borrow-confusion guard |
-| `F-FORECAST-LTMISMATCH` | forecast `oo_placed` sized for catalog LT=8 | SEED-13 / REG-02 (see folder README.txt: set sku-settings LT=4, then accept) |
+| `F-FORECAST-LTMISMATCH` | LT-override guard: clean set, cut LT 8→4, accept | REG-02 (see folder README.txt: assert 0 stockout + max WOS < 40) |
 
 ## Malformed sets — `F-MALFORMED/*` (each must RAISE `SeedError` / 400)
 
