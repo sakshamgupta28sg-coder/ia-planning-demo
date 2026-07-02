@@ -35,6 +35,7 @@ curl -X POST :PORT/api/admin/upload-seeds \
 | `F-EARLYPEAK` | peak_week 16 (before planning boundary) | over-supply probe (Fix-1 class), WOS-spike checks |
 | `F-DUPNAME` | two SKUs share `l2_name` | SEED-12, ENG-10 borrow-confusion guard |
 | `F-FORECAST-LTMISMATCH` | LT-override guard: clean set, cut LT 8→4, accept | REG-02 (see folder README.txt: assert 0 stockout + max WOS < 40) |
+| `F-FORECAST-CONSUME` | non-empty forecast (units 60 + oo_placed 40, 2026 wk30-40) | ENG-12 (see folder README.txt: assert written_sales_units==60 + on_order_placed_total_unit==40) |
 
 ## Malformed sets — `F-MALFORMED/*` (each must RAISE `SeedError` / 400)
 

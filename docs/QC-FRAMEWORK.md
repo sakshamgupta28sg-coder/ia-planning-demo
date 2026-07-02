@@ -48,7 +48,7 @@
 - **INV-4 oo_locked:** locked ⇔ `w + effLT > season_end`; recomputed off effective LT each read (never stale after an LT edit).
 - **INV-5 Recomm idempotency:** after Accept, re-read recomm = 0 everywhere; Accept-again is a no-op.
 - **INV-6 Recomm credit:** placing OOP in ANY week reduces total recomm by exactly that amount; recomm never negative.
-- **INV-7 Byte-identical:** with no CSV seeds (`F-DEMO`), output is byte-identical to golden baseline (`golden.py verify_core`). Any optional feature absent → output unchanged.
+- **INV-7 Byte-identical:** with no CSV seeds (`F-DEMO`), output is byte-identical to golden baseline (`golden.py verify_core`). Any optional feature absent → output unchanged. **Capture the baseline from the demo path too** — `IA_SEEDS_DIR=qc-fixtures/F-DEMO python3 backend/_regression/golden.py capture`. `baseline.json` is gitignored and defaults to whatever seed is loaded; if captured against the working `backend/seeds/` (60-SKU set) it key-mismatches the demo run. Same seed for capture + verify.
 - **INV-8 Year isolation:** editing/ordering in year Y changes only year Y. EVERY panel/endpoint that takes `year` must reflect the requested year. (Regression: exceptions panel was year-blind.)
 - **INV-9 SKU/channel isolation:** an edit to (hc,ch) never changes another, except the documented New-SKU Disc% borrow.
 - **INV-10 Reversibility:** every mutation has an inverse that restores prior state byte-for-byte (cell undo, undo-recomm, undo top-down, reset overrides, snapshot restore).
@@ -68,7 +68,7 @@
 | ENG-09 | Exception status | critical=stockout-in-LT; low=stockout beyond LT; excess=no stockout & cov>(LT+target)[FC] or target×1.5[WOS]; planned runout ≠ critical |
 | ENG-10 | New-SKU borrow | New Disc% = tagged Old's Disc% at week×channel during 52-wk window; planner override wins; outside window → own |
 | ENG-11 | Lifecycle | rows exist only between activation_week and deactivation_week |
-| ENG-12 | forecast.csv | `expected_sales_units` replaces planning forecast; `oo_placed` lands at W+effLT; actuals win; partial OK |
+| ENG-12 | forecast.csv | `expected_sales_units` replaces planning forecast; `oo_placed` lands at W+effLT; actuals win; partial OK. Fixture `F-FORECAST-CONSUME` (60/40 on 2026 wk30-40): assert `written_sales_units==60` + `on_order_placed_total_unit==40` on those cells; blank `F-CSV6` keeps engine forecast. |
 
 Run across `F-DEMO`, `F-CSV6`, `F-CSV60`, `F-LONGLT`.
 

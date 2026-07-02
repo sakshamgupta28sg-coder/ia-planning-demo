@@ -147,6 +147,26 @@ open(os.path.join(ltm,"README.txt"),"w").write(
     "Assert: 0 stockout AND max WOS < 40 (old code blew up to WOS 40-121).\n"
     "Validated 2026-07: applied=17, maxWOS=17, stockout=0.\n")
 
+# F-FORECAST-CONSUME: ENG-12 guard for the forecast-consumption path. base_forecast leaves
+# expected_sales_units blank + oo_placed=0 (inert, byte-identical) — that never exercises the
+# consumption branch (dummy_data _forecast_override -> units override + seed_oop). This set
+# plants NON-EMPTY forecast for 70001 across channels on unactualised 2026 weeks so the engine
+# must (a) use expected_sales_units as written_sales and (b) surface oo_placed as
+# on_order_placed_total_unit. Only forecast.csv differs from F-CSV6.
+fcc=fresh("F-FORECAST-CONSUME"); write_valid(fcc, cat)
+fcc_rows=[]
+for r in cat:
+    for ch in CHANNELS:
+        for wn in range(30,41):                       # planning weeks, unactualised
+            fcc_rows.append([r[0],ch,2026,wn,60,40])  # units override 60, oo_placed 40
+write_csv(fcc,"forecast.csv",["hierarchy_code","channel","year","week_num","expected_sales_units","oo_placed"],fcc_rows)
+open(os.path.join(fcc,"README.txt"),"w").write(
+    "ENG-12 (forecast-consumption guard):\n"
+    "  Load: IA_DB_PATH=/tmp/qc.db IA_SEEDS_DIR=qc-fixtures/F-FORECAST-CONSUME\n"
+    "  forecast.csv sets expected_sales_units=60 + oo_placed=40 for 2026 wk30-40, all channels.\n"
+    "Assert on those cells: written_sales == 60 AND on_order_placed_total_unit == 40\n"
+    "  (a blank/0 forecast, as in F-CSV6, must instead keep the engine's own forecast).\n")
+
 # ── F-MALFORMED/* : each breaks exactly ONE rule ──────────────────────────────
 mroot=fresh("F-MALFORMED")
 def malformed(sub, mutate):
