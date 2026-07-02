@@ -1753,6 +1753,12 @@ def _recalc(row: Dict, ovr: Dict) -> Dict:
 # dicts), so callers can mutate freely without corrupting the cached copy.
 _AGG_CACHE: Dict[tuple, List[Dict]] = {}
 _AGG_CACHE_TOKEN = None
+# Strictly-past years (< DEFAULT_YEAR) are read-only history — no edit to the current
+# or a future year can change them. So their builds (the LY/LLY comparison columns,
+# ~36% of a portfolio load) survive mutation-version bumps and are cached on the seed
+# version alone, instead of being thrown away with _AGG_CACHE after every edit.
+_PAST_CACHE: Dict[tuple, List[Dict]] = {}
+_PAST_CACHE_MEM = None
 # Bumped on in-memory WP_DATA mutations that don't themselves commit a DB write
 # the cache would otherwise see (placeholder materialize/dematerialize). DB writes
 # are already covered by mutation_version().
@@ -1781,6 +1787,22 @@ def get_agg_rows(hc_filter: int = None, ch_filter: str = None,
     if _overrides_override is not None:
         with _scoped_year(year):
             return _agg_rows_impl(hc_filter, ch_filter, _overrides_override, year, _with_compare)
+
+    # Strictly-past years are immutable w.r.t. current/future-year edits, so their
+    # builds outlive mutation-version bumps — cache on seed version only. This is the
+    # comparison-map (_with_compare=False) sub-build path; keeping it warm across edits
+    # is what removes the ~36% LY/LLY rebuild from every post-edit portfolio load.
+    if not _with_compare and year < DEFAULT_YEAR:
+        global _PAST_CACHE_MEM
+        if _PAST_CACHE_MEM != _MEM_VERSION:
+            _PAST_CACHE.clear(); _PAST_CACHE_MEM = _MEM_VERSION
+        pkey = (year, hc_filter, ch_filter)
+        past = _PAST_CACHE.get(pkey)
+        if past is None:
+            with _scoped_year(year):
+                past = _agg_rows_impl(hc_filter, ch_filter, None, year, False)
+            _PAST_CACHE[pkey] = past
+        return [dict(r) for r in past]
 
     global _AGG_CACHE_TOKEN
     token = (mutation_version(), _MEM_VERSION)
