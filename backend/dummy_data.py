@@ -175,13 +175,16 @@ def fiscal_week_for_date(d: date) -> int:
 # Active "now" (in-flight week). Same precedence as _resolve_now_year above; this is
 # the week-level resolution (the live-clock branch needs FISCAL_CALENDAR, built above).
 def resolve_current_week() -> int:
-    """IA_PINNED_WEEK → IA_LIVE_CLOCK (real week) → DATA (last actual + 1) → 202620."""
+    """IA_PINNED_WEEK → IA_LIVE_CLOCK (clamped to data) → DATA (last actual + 1) → 202620."""
     explicit = os.getenv("IA_PINNED_WEEK")
     if explicit:
         return int(explicit)
-    if os.getenv("IA_LIVE_CLOCK"):
-        return fiscal_week_for_date(date.today())
     last = _data_latest_actual_week()
+    if os.getenv("IA_LIVE_CLOCK"):
+        live = fiscal_week_for_date(date.today())
+        # Clamp to last_actual+1 so a lagging upload never lets the clock outrun the
+        # data — otherwise weeks in the gap flip to "actualised" with fabricated actuals.
+        return min(live, _next_fiscal_week(last)) if last is not None else live
     if last is not None:
         return _next_fiscal_week(last)
     return _DEFAULT_NOW_WEEK
