@@ -47,6 +47,11 @@ def _schedule_restart(delay: float = 1.0):
       inherited, so it reloads from the same seeds folder via the proven cold start.
     """
     def _restart():
+        # Desktop app: the launcher supervises this server as a child process, so exit
+        # with the agreed code and it relaunches on the same port with the new seeds
+        # loaded — the native window stays open and just reconnects.
+        if os.environ.get("IA_DESKTOP") == "1":
+            os._exit(3)
         if _running_under_uvicorn_reload():
             # Rewrite the (gitignored) sentinel's content so uvicorn's watcher fires.
             # Robust to the file being absent on a fresh checkout — we just create it.
