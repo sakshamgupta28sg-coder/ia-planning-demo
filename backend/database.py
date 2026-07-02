@@ -5,18 +5,103 @@ Single file: planning.db (sits next to this module).
 No external dependencies — sqlite3 ships with Python.
 """
 
-import sqlite3
 import json
 import os
+import re
 from typing import Dict, List, Optional
 
+# ── Backend selection ─────────────────────────────────────────────────────────
+# DATABASE_URL set (cloud, e.g. Neon) -> Postgres. Unset (local/dev) -> SQLite,
+# byte-identical to before. Every db_* function speaks SQLite SQL; the connection
+# shim below translates it to Postgres when needed, so the 44 functions are
+# untouched by the choice of backend.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+_PG = bool(DATABASE_URL)
 DB_PATH = os.environ.get("IA_DB_PATH", os.path.join(os.path.dirname(__file__), "planning.db"))
 
+if _PG:
+    import psycopg2
+    import psycopg2.extras
+else:
+    import sqlite3
 
-def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Primary-key column per table, so SQLite "INSERT OR REPLACE" can become a Postgres
+# "INSERT ... ON CONFLICT (pk) DO UPDATE SET ...". Only tables that use OR REPLACE.
+_UPSERT_PK = {
+    "overrides": "key", "channel_settings": "key", "sku_settings": "hierarchy_code",
+    "new_skus": "hierarchy_code", "settings": "key",
+}
+_IOR_RE = re.compile(r"INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\(([^)]*)\)", re.IGNORECASE)
+
+
+def _to_pg(sql: str) -> str:
+    """Translate the SQLite SQL the db_* functions write into Postgres dialect."""
+    m = _IOR_RE.search(sql)
+    if m:
+        table, cols = m.group(1), [c.strip() for c in m.group(2).split(",")]
+        pk = _UPSERT_PK[table]
+        sets = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c != pk)
+        sql = _IOR_RE.sub(f"INSERT INTO {table} ({', '.join(cols)})", sql, count=1)
+        sql = sql.rstrip().rstrip(";") + f" ON CONFLICT ({pk}) DO UPDATE SET {sets}"
+    sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+    sql = sql.replace("%", "%%")   # escape literal % (e.g. LIKE 'budget_%') before adding %s
+    sql = sql.replace("?", "%s")   # SQLite placeholder -> Postgres placeholder
+    return sql
+
+
+class _Conn:
+    """Minimal shim presenting the sqlite3 connection API (execute/executemany/commit,
+    cursor with fetch*/rowcount, context manager) over either sqlite3 or psycopg2.
+    A fresh connection per _conn() call, closed on block exit (matters for Postgres
+    connection limits). Rows support both r["col"] and r[0] on both backends."""
+
+    def __init__(self):
+        if _PG:
+            self._c = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
+        else:
+            self._c = sqlite3.connect(DB_PATH)
+            self._c.row_factory = sqlite3.Row
+
+    def execute(self, sql, params=()):
+        if _PG:
+            cur = self._c.cursor()
+            cur.execute(_to_pg(sql), tuple(params))
+            return cur
+        return self._c.execute(sql, params)
+
+    def executemany(self, sql, seq):
+        if _PG:
+            cur = self._c.cursor()
+            cur.executemany(_to_pg(sql), [tuple(p) for p in seq])
+            return cur
+        return self._c.executemany(sql, seq)
+
+    def commit(self):
+        self._c.commit()
+
+    def close(self):
+        self._c.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self._c.rollback()
+        self._c.close()
+        return False
+
+
+def _conn() -> "_Conn":
+    return _Conn()
+
+
+def _insert_returning_id(conn: "_Conn", sql: str, params) -> int:
+    """Run an INSERT and return the new autoincrement id, both backends."""
+    if _PG:
+        cur = conn.execute(sql.rstrip().rstrip(";") + " RETURNING id", params)
+        return cur.fetchone()[0]
+    return conn.execute(sql, params).lastrowid
 
 
 # ── Mutation version ──────────────────────────────────────────────────────────
@@ -28,7 +113,7 @@ def _conn() -> sqlite3.Connection:
 _MUTATION_VERSION = 0
 
 
-def _commit(conn: sqlite3.Connection) -> None:
+def _commit(conn) -> None:
     """Commit a write and advance the mutation version (single choke point)."""
     global _MUTATION_VERSION
     conn.commit()
@@ -142,7 +227,12 @@ def init_db():
         # Migration: snapshots gained settings_data (SKU + channel-level settings
         # captured at save time) after the table first shipped. Add the column to
         # pre-existing DBs. Default '{}' = an old snapshot with no settings payload.
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
+        if _PG:
+            cols = {r[0] for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'snapshots'"
+            ).fetchall()}
+        else:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
         if "settings_data" not in cols:
             conn.execute("ALTER TABLE snapshots ADD COLUMN settings_data TEXT NOT NULL DEFAULT '{}'")
         _commit(conn)
@@ -259,12 +349,12 @@ def db_list_placeholders() -> List[Dict]:
 
 def db_insert_placeholder(name: str, source_hc: int, created_at: str) -> Dict:
     with _conn() as conn:
-        cur = conn.execute(
+        pid = _insert_returning_id(
+            conn,
             "INSERT INTO placeholders (name, source_hc, created_at) VALUES (?, ?, ?)",
             (name, source_hc, created_at),
         )
         _commit(conn)
-        pid = cur.lastrowid
     return {"id": pid, "name": name, "source_hc": source_hc, "created_at": created_at}
 
 
@@ -447,14 +537,14 @@ def db_insert_snapshot(name: str, created_at: str, overrides_count: int,
     state — not just cell overrides.
     """
     with _conn() as conn:
-        cur = conn.execute(
+        snap_id = _insert_returning_id(
+            conn,
             "INSERT INTO snapshots "
             "(name, created_at, overrides_count, overrides_data, summary_data, settings_data) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (name, created_at, overrides_count,
              json.dumps(overrides), json.dumps(summary), json.dumps(settings or {})),
         )
-        snap_id = cur.lastrowid
         _commit(conn)
     return {
         "id":              snap_id,
