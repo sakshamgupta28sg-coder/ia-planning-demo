@@ -121,9 +121,17 @@ def main():
         except Exception:
             time.sleep(0.2)
 
+    ver = ""
+    try:
+        sys.path.insert(0, backend_dir)
+        from _version import __version__ as ver
+    except Exception:
+        ver = ""
+    title = f"IA Planning v{ver}" if ver else "IA Planning"
+
     try:
         import webview
-        webview.create_window("IA Planning", url, width=1440, height=900)
+        webview.create_window(title, url, width=1440, height=900)
         webview.start()   # blocks until the window is closed
     except Exception:
         import webbrowser

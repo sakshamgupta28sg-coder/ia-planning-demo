@@ -2,8 +2,17 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import wp, ty_ly, scenario, admin
+try:
+    from _version import __version__ as APP_VERSION
+except Exception:
+    APP_VERSION = "0.0.0"
 
-app = FastAPI(title="IA Planning Demo", version="1.0.0")
+app = FastAPI(title="IA Planning Demo", version=APP_VERSION)
+
+
+@app.get("/api/version")
+def version():
+    return {"version": APP_VERSION}
 
 # Local dev origins always allowed; add deployed frontends (e.g. the Vercel URL)
 # via ALLOWED_ORIGINS="https://foo.vercel.app,https://bar" — no code change to deploy.

@@ -15,7 +15,7 @@ datas = [
 # The backend is imported dynamically via uvicorn.run("main:app"), so name its modules
 # and uvicorn's dynamically-loaded protocol/loop submodules explicitly.
 hiddenimports = [
-    "main", "dummy_data", "database", "seed_loader",
+    "main", "dummy_data", "database", "seed_loader", "_version",
     "routers.wp", "routers.ty_ly", "routers.scenario", "routers.admin",
     "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",
     "uvicorn.protocols", "uvicorn.protocols.http", "uvicorn.protocols.http.auto",
