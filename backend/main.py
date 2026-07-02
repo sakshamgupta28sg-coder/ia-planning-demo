@@ -22,7 +22,15 @@ app.include_router(ty_ly.router, prefix="/api")
 app.include_router(scenario.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 
-
-@app.get("/")
-def root():
-    return {"status": "ok", "docs": "/docs"}
+# Desktop-app mode: the launcher sets IA_STATIC_DIR to the bundled static frontend
+# (Next.js export), so FastAPI serves the whole UI at "/" on the same origin as /api.
+# Unset (web/dev, where Next serves the UI separately) -> keep the JSON health root.
+# Mounted AFTER the /api routers so API paths always win.
+_STATIC_DIR = os.environ.get("IA_STATIC_DIR")
+if _STATIC_DIR and os.path.isdir(_STATIC_DIR):
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="ui")
+else:
+    @app.get("/")
+    def root():
+        return {"status": "ok", "docs": "/docs"}
