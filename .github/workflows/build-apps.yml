@@ -33,7 +33,7 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE: /api
         run: |
-          npm install
+          npm ci --legacy-peer-deps
           npm run build
 
       - name: Install Python build deps
