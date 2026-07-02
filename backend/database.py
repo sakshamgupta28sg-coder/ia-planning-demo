@@ -538,6 +538,32 @@ def db_log_audit(hierarchy_code: int, channel: str, current_week: int,
         _commit(conn)
 
 
+def db_batch_edit(override_upserts, audit_rows) -> None:
+    """Apply many override upserts + audit inserts in ONE transaction / ONE commit.
+
+    Same per-row effect as db_upsert_override + db_log_audit called in a loop, but a
+    single fsync and a single mutation-version bump instead of one per row. Used by the
+    accept batch path. override_upserts: [(key, data_dict), ...];
+    audit_rows: [(hc, ch, wk, field, old_value, new_value), ...].
+    """
+    from datetime import datetime as _dt
+    ts = _dt.now().isoformat(timespec="seconds")
+    with _conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO overrides (key, data) VALUES (?, ?)",
+            [(k, json.dumps(v)) for k, v in override_upserts],
+        )
+        conn.executemany(
+            "INSERT INTO audit_log "
+            "(timestamp, hierarchy_code, channel, current_week, field, old_value, new_value) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(ts, hc, ch, wk, field,
+              str(ov) if ov is not None else None, str(nv))
+             for (hc, ch, wk, field, ov, nv) in audit_rows],
+        )
+        _commit(conn)
+
+
 def db_get_audit_log(limit: int = 100, hierarchy_code: int = None,
                      field: str = None) -> List[Dict]:
     """Return most-recent audit entries (newest first), with optional filters."""

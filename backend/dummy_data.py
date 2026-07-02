@@ -1153,7 +1153,7 @@ from datetime import datetime
 from database import (
     init_db,
     db_get_overrides, db_upsert_override, db_clear_overrides, db_replace_overrides,
-    db_batch_upsert_overrides,
+    db_batch_upsert_overrides, db_batch_edit,
     db_list_snapshots, db_get_snapshot, db_insert_snapshot, db_delete_snapshot, db_rename_snapshot,
     db_get_all_sku_settings, db_upsert_sku_setting, db_replace_sku_settings,
     db_get_all_channel_settings, db_upsert_channel_setting, db_replace_channel_settings,
@@ -2789,23 +2789,68 @@ def accept_recomm_receipts(hcs: List[int], channels: List[str], year: int = DEFA
     each placement shrank the remaining target → long-LT SKUs under-converged.)
     A re-read after this returns recomm 0 everywhere (idempotent). Locked weeks never order.
     """
-    count = 0
-    for hc in hcs:
+    # BATCHED: exactly the per-week apply_edit(on_order_placed_total_unit) path, but the
+    # costs that made it O(n^2)/180-builds are hoisted out:
+    #   • recomm read: ONE get_agg_rows(None,None) portfolio build instead of one per
+    #     (hc,ch). Placeholders are excluded from the portfolio sweep, so a placeholder hc
+    #     still reads per-stream (always a single hidden SKU anyway).
+    #   • write: every row in ONE transaction / ONE commit (was: commit per week).
+    #   • recomm rebuild: ONCE for all touched streams (was: rebuild per week).
+    # A stream's recomm is computed independently of other streams, so reading it from the
+    # portfolio build is identical to reading it per-(hc,ch). Verified byte-identical to the
+    # old loop (overrides + full get_agg_rows + audit + idempotency) on F-CSV6/LONGLT/
+    # EARLYPEAK/DUPNAME/CSV60. Recomm/chain math itself is untouched.
+    overrides = db_get_overrides()                      # read ONCE (was: per apply_edit)
+    # First base row per (hc, ch, wk) for the audit old_value — matches apply_edit's
+    # next(...) "first match" semantics.
+    wp_by: Dict[tuple, Dict] = {}
+    for _r in WP_DATA:
+        wp_by.setdefault((_r["hierarchy_code"], _r["channel"], _r["current_week"]), _r)
+
+    req_hcs, req_chs = set(hcs), set(channels)
+    ph_hcs = [hc for hc in hcs if hc in PLACEHOLDER_HCS]
+    rows = [
+        r for r in get_agg_rows(None, None, year=year)
+        if r["hierarchy_code"] in req_hcs and r["channel"] in req_chs
+    ] if any(hc not in PLACEHOLDER_HCS for hc in hcs) else []
+    for hc in ph_hcs:
         for ch in channels:
-            # SINGLE batch: read the recomm residual once and add it to OOP. Looping would
-            # over-supply — crediting OOP shifts the leveled schedule's preferred weeks each
-            # pass, so repeated passes stack orders. One pass places the coherent residual
-            # plan; any remainder is the inherent long-LT locked-tail edge (a few units that
-            # no order can reach), not worth over-buying to chase.
-            batch = [
-                (r["current_week"], int(r.get("on_order_placed_total_unit", 0)) + int(r["recomm_receipt_units"]))
-                for r in get_agg_rows(hc, ch, year=year)
-                if not (r.get("actualised") or r.get("is_ongoing") or r.get("oo_locked"))
-                and int(r.get("recomm_receipt_units", 0)) > 0
-            ]
-            for wk, new_oop in batch:
-                apply_edit(hc, wk, ch, "on_order_placed_total_unit", float(new_oop))
-                count += 1
+            rows += get_agg_rows(hc, ch, year=year)
+
+    upserts: List[tuple] = []       # (key, entry)
+    audit_rows: List[tuple] = []    # (hc, ch, wk, field, old_value, new_value)
+    touched_hcs, touched_chs = set(), set()
+    count = 0
+    # SINGLE batch per stream: recomm already credits placed OOP as supply, so the column
+    # IS the coherent residual plan — add it to OOP once, no chronological re-loop.
+    for r in rows:
+        if r.get("actualised") or r.get("is_ongoing") or r.get("oo_locked"):
+            continue
+        rec = int(r.get("recomm_receipt_units", 0))
+        if rec <= 0:
+            continue
+        hc, ch, wk = r["hierarchy_code"], r["channel"], r["current_week"]
+        new_oop = int(r.get("on_order_placed_total_unit", 0)) + rec
+        key = _ovr_key(hc, wk, ch)
+        entry = overrides.get(key, {})
+        old_value = entry.get("on_order_placed_total_unit")
+        if old_value is None:
+            _b = wp_by.get((hc, ch, wk))
+            if _b:
+                old_value = _b.get("on_order_placed_total_unit")
+        value = float(round(new_oop))                   # same rounding as apply_edit
+        entry["on_order_placed_total_unit"] = value
+        entry["_last_edited"] = "on_order_placed_total_unit"
+        overrides[key] = entry
+        upserts.append((key, entry))
+        audit_rows.append((hc, ch, wk, "on_order_placed_total_unit", old_value, value))
+        touched_hcs.add(hc); touched_chs.add(ch)
+        count += 1
+
+    if upserts:
+        db_batch_edit(upserts, audit_rows)              # ONE transaction / ONE commit
+        with _scoped_year(year):                        # rebuild recomm ONCE for all streams
+            _rebuild_pipeline_and_recomm(sorted(touched_hcs), sorted(touched_chs))
     return count
 
 
@@ -2818,36 +2863,45 @@ def undo_recomm_receipts(hcs: List[int], channels: List[str], year: int = DEFAUL
     same week (e.g. written sales) are preserved — only the OO field is dropped.
     Returns count of weeks cleared.
     """
+    # BATCHED (mirrors accept): one portfolio get_agg_rows for normal SKUs (+ per-stream for
+    # placeholders), edit the overrides dict in memory, then persist in ONE atomic
+    # db_replace_overrides — instead of a per-(hc,ch) build and a commit per week. End state
+    # (overrides + recomm) is byte-identical to the old loop (verified vs golden).
     overrides = db_get_overrides()
-    touched = False
-    count = 0
-    for hc in hcs:
+    req_hcs, req_chs = set(hcs), set(channels)
+    ph_hcs = [hc for hc in hcs if hc in PLACEHOLDER_HCS]
+    rows = [
+        r for r in get_agg_rows(None, None, year=year)
+        if r["hierarchy_code"] in req_hcs and r["channel"] in req_chs
+    ] if any(hc not in PLACEHOLDER_HCS for hc in hcs) else []
+    for hc in ph_hcs:
         for ch in channels:
-            # Planning weeks where the planner could have placed an order.
-            planning_wks = {
-                r["current_week"]
-                for r in get_agg_rows(hc, ch, year=year)
-                if not r.get("actualised")
-                and not r.get("is_ongoing")
-                and not r.get("oo_locked")
-            }
-            for wk in planning_wks:
-                key = _ovr_key(hc, wk, ch)
-                entry = overrides.get(key)
-                if not entry or "on_order_placed_total_unit" not in entry:
-                    continue
-                rest = {
-                    k: v for k, v in entry.items()
-                    if k not in ("on_order_placed_total_unit", "_last_edited")
-                }
-                if rest:
-                    rest["_last_edited"] = "on_order_placed_total_unit"
-                    db_upsert_override(key, rest)
-                else:
-                    db_delete_override(key)
-                count += 1
-                touched = True
-    if touched:
+            rows += get_agg_rows(hc, ch, year=year)
+
+    changed = False
+    count = 0
+    for r in rows:
+        # Planning weeks where the planner could have placed an order.
+        if r.get("actualised") or r.get("is_ongoing") or r.get("oo_locked"):
+            continue
+        key = _ovr_key(r["hierarchy_code"], r["current_week"], r["channel"])
+        entry = overrides.get(key)
+        if not entry or "on_order_placed_total_unit" not in entry:
+            continue
+        rest = {
+            k: v for k, v in entry.items()
+            if k not in ("on_order_placed_total_unit", "_last_edited")
+        }
+        if rest:
+            rest["_last_edited"] = "on_order_placed_total_unit"
+            overrides[key] = rest
+        else:
+            del overrides[key]
+        count += 1
+        changed = True
+
+    if changed:
+        db_replace_overrides(overrides)                 # ONE atomic write (was: per week)
         with _scoped_year(year):
             _rebuild_pipeline_and_recomm(hcs, channels)
     return count
