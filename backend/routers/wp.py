@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Dict
 from dummy_data import (
     WP_DATA, HIERARCHIES, CHANNELS, FISCAL_WEEKS, CURRENT_WEEK, CATEGORIES,
     get_agg_rows, apply_edit, reset_overrides, save_snapshot, restore_snapshot, delete_snapshot,
@@ -611,6 +611,7 @@ def read_budget(
 # ── Snapshots ─────────────────────────────────────────────────────────────────
 class SnapshotRequest(BaseModel):
     name: str
+    view: Optional[Dict] = None   # UI filter selection at save time (hcs/channels/category/year)
 
 
 @router.get("/snapshots/compare")
@@ -640,15 +641,15 @@ def list_snapshots():
 def create_snapshot(body: SnapshotRequest):
     if not body.name.strip():
         raise HTTPException(400, "Snapshot name is required")
-    return save_snapshot(body.name.strip())
+    return save_snapshot(body.name.strip(), body.view)
 
 
 @router.put("/snapshots/{snap_id}/restore")
 def restore(snap_id: int):
-    ok = restore_snapshot(snap_id)
-    if not ok:
+    view = restore_snapshot(snap_id)
+    if view is None:
         raise HTTPException(404, "Snapshot not found")
-    return {"restored": snap_id}
+    return {"restored": snap_id, "view": view}
 
 
 @router.delete("/snapshots/{snap_id}")

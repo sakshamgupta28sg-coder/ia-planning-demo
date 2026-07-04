@@ -2409,11 +2409,14 @@ def reset_overrides():
     _reset_fwd_demand_and_recomm()   # restore index + WP_DATA recomm to baseline
 
 
-def restore_snapshot(snap_id: int) -> bool:
+def restore_snapshot(snap_id: int):
+    """Restore a snapshot's plan state. Returns the saved UI view dict (which SKUs/
+    channels/category/year were on screen at save time) so the frontend can re-apply
+    it, or None if the snapshot doesn't exist. Old snapshots return {} (no view)."""
     global _SKU_SETTINGS_OVERRIDES, _CHANNEL_TARGET_WOS
     snap = db_get_snapshot(snap_id)
     if not snap:
-        return False
+        return None
     db_replace_overrides(snap["overrides"])
 
     # Restore the captured plan settings too (lead_time/case_pack/safety_weeks/
@@ -2434,11 +2437,19 @@ def restore_snapshot(snap_id: int) -> bool:
     # Rebuild demand + pipeline indexes so recomm reflects snapshot's sales/OO state,
     # and re-derive each SKU's plan from the restored settings (lead_time/case_pack
     # change look-ahead, locks and rounding). Without this they stay stale until restart.
+    #
+    # _rebuild_fwd_demand_and_recomm rebuilds ALL three indexes (fwd/wos/pipeline) +
+    # recomm override-aware for every SKU it processes, so the old per-SKU
+    # recompute_recomm_for_sku loop over all SKUs was redundant (~2.3s on 60 SKUs) —
+    # phase 2 overwrote every key it wrote. The one exception: _rebuild skips SKUs with
+    # look_ahead<=0, so those still need the per-SKU recompute. Guard for exactly those.
     all_hcs = [h["hierarchy_code"] for h in HIERARCHIES]
     for hc in all_hcs:
-        recompute_recomm_for_sku(hc)
+        m = get_effective_metrics(hc)
+        if m["lead_time_weeks"] + m["safety_weeks"] <= 0:
+            recompute_recomm_for_sku(hc)   # _rebuild would skip it below
     _rebuild_fwd_demand_and_recomm(all_hcs)
-    return True
+    return settings.get("view") or {}
 
 
 def delete_snapshot(snap_id: int) -> bool:
@@ -2449,7 +2460,7 @@ def rename_snapshot(snap_id: int, new_name: str) -> bool:
     return db_rename_snapshot(snap_id, new_name.strip())
 
 
-def save_snapshot(name: str) -> Dict:
+def save_snapshot(name: str, view: Dict = None) -> Dict:
     all_rows = get_agg_rows()
     overrides = db_get_overrides()
     td = round(sum(r["written_sales_dollars"] for r in all_rows), 2)
@@ -2467,6 +2478,10 @@ def save_snapshot(name: str) -> Dict:
     settings = {
         "sku":     {str(hc): dict(v) for hc, v in _SKU_SETTINGS_OVERRIDES.items()},
         "channel": {k: int(v) for k, v in _CHANNEL_TARGET_WOS.items()},
+        # The UI filter selection live at save time (which SKUs/channels/category/year
+        # were on screen). Inert on the backend — restore returns it so the frontend can
+        # re-apply the same view and auto-show those features. Old snapshots have no view.
+        "view":    view or {},
     }
     return db_insert_snapshot(
         name=name,

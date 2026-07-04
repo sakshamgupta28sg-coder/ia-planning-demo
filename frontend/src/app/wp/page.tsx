@@ -678,7 +678,14 @@ export default function WPPage() {
   async function handleSaveSnapshot() {
     if (!snapshotName.trim()) return;
     setSaving(true);
-    const snap = await saveSnapshotAPI(snapshotName.trim());
+    // Capture the on-screen filter selection so restore can re-show the same features.
+    const view = {
+      hcs: selectedHcs,
+      channels: selectedChannels,
+      category: selectedCategory,
+      year: selectedYear,
+    };
+    const snap = await saveSnapshotAPI(snapshotName.trim(), view);
     setSnapshots((prev) => [...prev, snap]);
     setSnapshotName("");
     setSaving(false);
@@ -707,7 +714,17 @@ export default function WPPage() {
       detail: "Your current plan will be replaced with this snapshot. All unsaved changes will be lost.",
       confirmLabel: "Restore",
       onConfirm: async () => {
-        await restoreSnapshotAPI(id);
+        const res = await restoreSnapshotAPI(id);
+        // Re-apply the filter selection saved with the snapshot so the same features
+        // auto-show. Old snapshots (no view) return {} → leave the current selection.
+        // Setting the filters also re-triggers reloadRows via its effect.
+        const v = res?.view;
+        if (v && Array.isArray(v.hcs)) {
+          setSelectedHcs(v.hcs.map(String));
+          setSelectedChannels(Array.isArray(v.channels) ? v.channels : []);
+          setSelectedCategory(v.category ?? "");
+          if (typeof v.year === "number") setSelectedYear(v.year);
+        }
         // A snapshot now also restores SKU + channel settings (lead_time/case_pack/
         // safety_weeks/target_wos), so refresh those panels too — not just the rows —
         // otherwise the settings inputs keep showing the pre-restore values.

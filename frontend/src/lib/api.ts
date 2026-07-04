@@ -89,17 +89,18 @@ export async function fetchSnapshots() {
   return res.json();
 }
 
-export async function saveSnapshotAPI(name: string) {
+export async function saveSnapshotAPI(name: string, view?: unknown) {
   const res = await fetch(`${BASE}/wp/snapshots`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, view }),
   });
   return res.json();
 }
 
 export async function restoreSnapshotAPI(snap_id: number) {
-  await fetch(`${BASE}/wp/snapshots/${snap_id}/restore`, { method: "PUT" });
+  const res = await fetch(`${BASE}/wp/snapshots/${snap_id}/restore`, { method: "PUT" });
+  return res.json();   // { restored, view: {hcs, channels, category, year} | {} }
 }
 
 export async function deleteSnapshotAPI(snap_id: number) {
