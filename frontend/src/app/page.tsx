@@ -2,6 +2,20 @@ import Link from "next/link";
 
 const CARDS = [
   {
+    href: "/admin",
+    title: "Data Import",
+    desc: "Upload your own catalog, supply, budgets, and sales history as CSV. Validated before saving — run the tool on your own products instead of the demo data.",
+    color: "border-purple-500",
+    badge: "CSV",
+  },
+  {
+    href: "/master",
+    title: "Master SKU Catalog",
+    desc: "Every SKU (Old + New) with lifecycle dates and attributes. New SKUs borrow Disc% from a tagged Old SKU for their first year.",
+    color: "border-emerald-500",
+    badge: "SKU",
+  },
+  {
     href: "/wp",
     title: "Working Plan",
     desc: "Written sales, BOP/EOP inventory, on-order, recommended receipts by week × channel × hierarchy.",
@@ -9,25 +23,11 @@ const CARDS = [
     badge: "WP",
   },
   {
-    href: "/ty-ly",
-    title: "TY vs LY",
-    desc: "Compare This Year actuals against Last Year across units and dollars, by channel and product.",
-    color: "border-emerald-500",
-    badge: "TY/LY",
-  },
-  {
-    href: "/scenario",
-    title: "Scenario Planning",
-    desc: "Model the impact of different markdown depths (% off) across Base, Optimistic, and Pessimistic scenarios.",
-    color: "border-violet-500",
-    badge: "SP",
-  },
-  {
-    href: "/skus",
-    title: "New SKUs",
-    desc: "Add new products into the planning hierarchy with launch weeks, pricing, and cost.",
+    href: "/placeholders",
+    title: "Placeholders",
+    desc: "What-if SKUs cloned from an Old SKU across all years, then edited like the Working Plan. Independent of the source and excluded from the live portfolio.",
     color: "border-amber-500",
-    badge: "SKU",
+    badge: "WHATIF",
   },
 ];
 
@@ -58,7 +58,7 @@ export default function Home() {
         ))}
       </div>
       <div className="mt-10 text-xs text-slate-600 border-t border-slate-800 pt-4">
-        8 product hierarchies · 3 channels · 52 fiscal weeks · dummy data only
+        10 SKUs (8 Old + 2 New) · 3 channels · fiscal years 2026–2028 · dummy data only
       </div>
     </div>
   );

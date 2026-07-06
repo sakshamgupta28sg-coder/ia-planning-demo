@@ -1,0 +1,57 @@
+name: Build desktop apps
+
+# Manual run (Actions tab -> Run workflow) or on a version tag (git tag v1.0.0 && push).
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: IA-Planning-macOS
+          - os: windows-latest
+            artifact: IA-Planning-Windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build frontend (static export)
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_BASE: /api
+        run: |
+          npm ci --legacy-peer-deps
+          npm run build
+
+      - name: Install Python build deps
+        run: >
+          pip install fastapi==0.111.0 "uvicorn[standard]==0.30.1"
+          python-multipart==0.0.9 pydantic==2.7.1 pywebview pyinstaller
+
+      - name: Build desktop app
+        run: pyinstaller packaging/ia-planning.spec --noconfirm
+
+      - name: Package (zip the dist)
+        run: |
+          cd dist
+          ls
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error

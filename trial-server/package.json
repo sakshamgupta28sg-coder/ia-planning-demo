@@ -1,0 +1,9 @@
+{
+  "name": "ia-planning-trial-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tiny serverless endpoint that enforces a per-machine free trial for the IA Planning desktop app.",
+  "dependencies": {
+    "@neondatabase/serverless": "^0.9.4"
+  }
+}

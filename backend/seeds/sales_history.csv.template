@@ -1,0 +1,29 @@
+hierarchy_code,channel,year,week_num,units,discount_perc
+# OPTIONAL FILE. Rename to sales_history.csv to activate. One row per
+# SKU x channel x ABSOLUTE-YEAR x fiscal-week.
+#
+# `year` is the real calendar year (e.g. 2024, 2025, 2026) — NOT a relative
+# TY/LY/LLY label. The tool maps the year you SELECT (Y) to TY=Y, LY=Y-1,
+# LLY=Y-2, and for each comparison year pulls a week from this file when it is
+# ALREADY ACTUALISED, otherwise from that year's WP forecast.
+#
+# So put your ACTUALS here, by the year they happened:
+#   - fully-past years  → all 52 weeks
+#   - the current year  → only the weeks already closed (e.g. 1..19 if "now" is wk20)
+#   - future years      → omit (no actuals yet; the WP forecast fills them)
+#
+# A stream (hc+channel) listed here plans on its own history; forward weeks are
+# reforecast from the most recent FULL prior year's shape. A SKU NOT listed here
+# keeps the parametric peak_week/peak_units curve.
+# week_num is the fiscal week 1..52 (not the 6-digit week_code). units >= 0.
+# discount_perc is a fraction (0.10 = 10% off); leave blank for 0.
+# Example: SKU 10001 Ecom — 2024 + 2025 full actuals, 2026 actuals through wk3.
+10001,Ecom,2026,1,46,0.04
+10001,Ecom,2026,2,41,0.04
+10001,Ecom,2026,3,49,0.03
+10001,Ecom,2025,1,40,0.04
+10001,Ecom,2025,2,36,0.04
+10001,Ecom,2025,26,150,0.02
+10001,Ecom,2025,40,95,0.20
+10001,Ecom,2024,1,35,0.06
+10001,Ecom,2024,26,140,0.03
