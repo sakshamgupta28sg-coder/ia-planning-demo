@@ -46,6 +46,7 @@ export default async function handler(req, res) {
       days_left: daysLeft,
       expired: daysLeft <= 0,
       trial_days: days,
+      email: rows[0].email || null,
     };
     const sig = crypto
       .createHmac('sha256', process.env.TRIAL_SECRET || '')
