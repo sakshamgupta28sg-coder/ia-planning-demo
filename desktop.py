@@ -35,6 +35,15 @@ RELOAD_EXIT_CODE = 3
 TRIAL_DAYS = 7
 _TRIAL_SECRET = b"ia-planning-trial-v1-8f3a2c9e"
 
+# Online trial (airtight against reinstall / new-account gaming): if TRIAL_ENDPOINT is set,
+# the app asks the server how many days remain, keyed by a hashed machine fingerprint the
+# server can't be tricked into resetting. It keeps working OFFLINE for TRIAL_GRACE_DAYS
+# between successful checks; only the first launch strictly needs internet. Empty endpoint
+# -> fall back to the offline-only local trial above (nothing to deploy).
+TRIAL_ENDPOINT = os.environ.get("IA_TRIAL_ENDPOINT", "")   # e.g. https://…vercel.app/api/trial
+TRIAL_GRACE_DAYS = 2
+_MID_SALT = b"ia-planning-mid-salt-1"
+
 
 def _resource_root():
     meipass = getattr(sys, "_MEIPASS", None)
@@ -106,11 +115,105 @@ def _trial_sig(first: str, seen: str) -> str:
     return hmac.new(_TRIAL_SECRET, f"{first}|{seen}".encode(), hashlib.sha256).hexdigest()
 
 
+def _machine_id() -> str:
+    """A stable, hashed per-machine fingerprint. Survives app reinstall and new user
+    accounts (it comes from hardware/OS ids), so the server can't be tricked into a
+    fresh trial. Hashed so a raw serial never leaves the machine."""
+    raw = ""
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.check_output(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"], text=True,
+                stderr=subprocess.DEVNULL)
+            import re
+            m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
+            raw = m.group(1) if m else ""
+        elif sys.platform.startswith("win"):
+            out = subprocess.check_output(
+                ["reg", "query", r"HKLM\SOFTWARE\Microsoft\Cryptography", "/v", "MachineGuid"],
+                text=True, stderr=subprocess.DEVNULL)
+            import re
+            m = re.search(r"MachineGuid\s+REG_SZ\s+([\w-]+)", out)
+            raw = m.group(1) if m else ""
+        else:
+            for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+                if os.path.exists(p):
+                    with open(p) as fh:
+                        raw = fh.read().strip()
+                    break
+    except Exception:
+        raw = ""
+    if not raw:                      # last resort — weaker, but always yields something
+        import getpass, platform
+        raw = f"{platform.node()}|{getpass.getuser()}"
+    return hashlib.sha256(_MID_SALT + raw.encode()).hexdigest()
+
+
+def _cache_sig(d: dict) -> str:
+    msg = f"{d.get('device')}|{d.get('first_seen')}|{d.get('days_left')}|{d.get('checked_at')}"
+    return hmac.new(_TRIAL_SECRET, msg.encode(), hashlib.sha256).hexdigest()
+
+
+def _read_cache(path: str):
+    """Return a validated online-cache dict, or None."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+        if "checked_at" in d and d.get("sig") == _cache_sig(d):
+            return d
+    except Exception:
+        pass
+    return None
+
+
+def _trial_status_online():
+    """Server-authoritative trial with a TRIAL_GRACE_DAYS offline window. Returns
+    (ok, days_left, reason)."""
+    path = _trial_marker_path()
+    now = datetime.now()
+    device = _machine_id()
+    # Ask the server.
+    try:
+        url = f"{TRIAL_ENDPOINT}?d={device}"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            srv = json.loads(r.read().decode())
+        if "days_left" not in srv:
+            raise ValueError("bad response")
+        cache = {"device": device, "first_seen": srv["first_seen"],
+                 "days_left": int(srv["days_left"]), "checked_at": now.isoformat()}
+        cache["sig"] = _cache_sig(cache)
+        _atomic_write(path, cache)
+        if srv.get("expired") or int(srv["days_left"]) <= 0:
+            return False, 0, "expired_online"
+        return True, int(srv["days_left"]), "ok_online"
+    except Exception:
+        pass   # offline / server down -> fall through to the grace policy
+    # Offline: rely on the last verified check, within the grace window.
+    cache = _read_cache(path)
+    if not cache or cache.get("device") != device:
+        return False, 0, "need_internet_first_run"   # never verified -> fail closed
+    try:
+        checked = datetime.fromisoformat(cache["checked_at"])
+    except Exception:
+        return False, 0, "need_internet_first_run"
+    if now < checked - timedelta(minutes=5):
+        return False, 0, "clock_rollback"
+    if now - checked > timedelta(days=TRIAL_GRACE_DAYS):
+        return False, 0, "need_internet_grace"
+    # Within grace: age the cached days_left by the days elapsed offline.
+    days_left = int(cache["days_left"]) - (now - checked).days
+    if days_left <= 0:
+        return False, 0, "expired_cache"
+    return True, days_left, "ok_cache_offline"
+
+
 def _trial_status():
-    """Return (ok, days_left, reason). Writes the marker on first run and refreshes
-    last_seen each launch. Fails closed (expired) on tamper/corruption/clock-rollback."""
+    """Return (ok, days_left, reason). Online when TRIAL_ENDPOINT is set; otherwise the
+    offline-only local trial. Fails closed on tamper/corruption/clock-rollback."""
     if _trial_disabled():
         return True, None, "disabled"
+    if TRIAL_ENDPOINT:
+        return _trial_status_online()
     path = _trial_marker_path()
     now = datetime.now()
     if not os.path.exists(path):
@@ -135,22 +238,32 @@ def _trial_status():
     return True, max(0, TRIAL_DAYS - (now - first).days), "ok"
 
 
-def _write_trial(path: str, first: str, seen: str):
+def _atomic_write(path: str, data: dict):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump({"f": first, "s": seen, "sig": _trial_sig(first, seen)}, fh)
+        json.dump(data, fh)
     os.replace(tmp, path)
 
 
-def _show_trial_expired():
+def _write_trial(path: str, first: str, seen: str):
+    _atomic_write(path, {"f": first, "s": seen, "sig": _trial_sig(first, seen)})
+
+
+def _show_trial_expired(reason: str = ""):
+    if reason in ("need_internet_first_run", "need_internet_grace"):
+        heading = "Internet connection required"
+        body = ("IA Planning needs to connect to the internet to verify your trial. "
+                "Please connect and reopen the app.")
+    else:
+        heading = "Trial period ended"
+        body = (f"Your {TRIAL_DAYS}-day trial of IA Planning has expired. Please contact "
+                "the sender to continue using the app.")
     html = (
         "<html><body style='font-family:-apple-system,Segoe UI,sans-serif;"
         "background:#0b1220;color:#e2e8f0;display:flex;align-items:center;"
         "justify-content:center;height:100vh;margin:0'><div style='text-align:center;"
         "max-width:440px;padding:24px'><h1 style='font-size:22px;margin:0 0 12px'>"
-        "Trial period ended</h1><p style='color:#94a3b8;line-height:1.5'>Your "
-        f"{TRIAL_DAYS}-day trial of IA Planning has expired. Please contact the sender "
-        "to continue using the app.</p></div></body></html>"
+        f"{heading}</h1><p style='color:#94a3b8;line-height:1.5'>{body}</p></div></body></html>"
     )
     try:
         import webview
@@ -169,7 +282,7 @@ def main():
     # Trial gate (parent only). Expired -> show a notice and never start the server/UI.
     trial_ok, trial_days_left, _trial_reason = _trial_status()
     if not trial_ok:
-        _show_trial_expired()
+        _show_trial_expired(_trial_reason)
         return
 
     backend_dir, static_dir, seed_src = _resource_root()
