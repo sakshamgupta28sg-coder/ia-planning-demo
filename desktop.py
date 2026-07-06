@@ -40,7 +40,9 @@ _TRIAL_SECRET = b"ia-planning-trial-v1-8f3a2c9e"
 # server can't be tricked into resetting. It keeps working OFFLINE for TRIAL_GRACE_DAYS
 # between successful checks; only the first launch strictly needs internet. Empty endpoint
 # -> fall back to the offline-only local trial above (nothing to deploy).
-TRIAL_ENDPOINT = os.environ.get("IA_TRIAL_ENDPOINT", "")   # e.g. https://…vercel.app/api/trial
+TRIAL_ENDPOINT = os.environ.get(
+    "IA_TRIAL_ENDPOINT",
+    "https://trial-server-sakshamgupta28sg-coders-projects.vercel.app/api/trial")
 TRIAL_GRACE_DAYS = 2
 _MID_SALT = b"ia-planning-mid-salt-1"
 
