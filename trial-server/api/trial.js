@@ -20,7 +20,9 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'bad device id' });
   }
   try {
-    const sql = neon(process.env.DATABASE_URL);
+    // Vercel Postgres injects POSTGRES_URL; a manual Neon setup uses DATABASE_URL. Accept either.
+    const conn = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL;
+    const sql = neon(conn);
     await sql`CREATE TABLE IF NOT EXISTS trials (
       device text PRIMARY KEY,
       first_seen timestamptz NOT NULL DEFAULT now()
