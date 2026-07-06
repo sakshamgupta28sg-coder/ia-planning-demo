@@ -20,6 +20,7 @@ import shutil
 import hashlib
 import threading
 import subprocess
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
@@ -168,15 +169,47 @@ def _read_cache(path: str):
     return None
 
 
+def _prompt_email() -> str:
+    """Ask for an email once (first launch) as a readable dashboard label. Native dialog,
+    so it needs no webview session. Returns '' if skipped/unavailable — email is optional
+    and never blocks the trial (the machine id is the real key)."""
+    msg = "Enter your email to start your IA Planning trial:"
+    try:
+        if sys.platform == "darwin":
+            script = (f'display dialog "{msg}" default answer "" '
+                      f'with title "IA Planning" buttons {{"Continue"}} default button "Continue"')
+            out = subprocess.check_output(["osascript", "-e", script], text=True,
+                                          stderr=subprocess.DEVNULL)
+            import re
+            m = re.search(r"text returned:(.*)$", out.strip())
+            return (m.group(1).strip() if m else "")
+        elif sys.platform.startswith("win"):
+            import tempfile
+            vbs = f'WScript.Echo(InputBox("{msg}","IA Planning"))'
+            fh = tempfile.NamedTemporaryFile("w", suffix=".vbs", delete=False)
+            fh.write(vbs); fh.close()
+            out = subprocess.check_output(["cscript", "//Nologo", fh.name], text=True,
+                                          stderr=subprocess.DEVNULL)
+            os.unlink(fh.name)
+            return out.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _trial_status_online():
     """Server-authoritative trial with a TRIAL_GRACE_DAYS offline window. Returns
     (ok, days_left, reason)."""
     path = _trial_marker_path()
     now = datetime.now()
     device = _machine_id()
+    # First launch on this machine -> collect an email label (optional, one time).
+    email = _prompt_email() if not os.path.exists(path) else ""
     # Ask the server.
     try:
         url = f"{TRIAL_ENDPOINT}?d={device}"
+        if email:
+            url += "&e=" + urllib.parse.quote(email)
         with urllib.request.urlopen(url, timeout=5) as r:
             srv = json.loads(r.read().decode())
         if "days_left" not in srv:

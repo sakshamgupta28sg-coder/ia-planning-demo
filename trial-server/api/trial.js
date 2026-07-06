@@ -19,6 +19,10 @@ export default async function handler(req, res) {
   if (!/^[a-f0-9]{16,128}$/.test(device)) {
     return res.status(400).json({ error: 'bad device id' });
   }
+  // Optional human-readable label. NOT the key — the machine id enforces the trial,
+  // so a different email can't reset anything; email is purely for your dashboard.
+  const email = String((req.query && req.query.e) || (req.body && req.body.e) || '')
+    .slice(0, 254).trim().toLowerCase() || null;
   try {
     // Vercel Postgres injects POSTGRES_URL; a manual Neon setup uses DATABASE_URL. Accept either.
     const conn = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL;
@@ -27,11 +31,13 @@ export default async function handler(req, res) {
       device text PRIMARY KEY,
       first_seen timestamptz NOT NULL DEFAULT now()
     )`;
-    // Insert on first sight; on repeat, the no-op UPDATE lets us RETURN the original date.
+    await sql`ALTER TABLE trials ADD COLUMN IF NOT EXISTS email text`;
+    // Insert on first sight; on repeat, keep the ORIGINAL first_seen and the FIRST email
+    // recorded (a later different email can't overwrite it -> can't be used to game things).
     const rows = await sql`
-      INSERT INTO trials (device) VALUES (${device})
-      ON CONFLICT (device) DO UPDATE SET device = EXCLUDED.device
-      RETURNING first_seen`;
+      INSERT INTO trials (device, email) VALUES (${device}, ${email})
+      ON CONFLICT (device) DO UPDATE SET email = COALESCE(trials.email, EXCLUDED.email)
+      RETURNING first_seen, email`;
     const firstSeen = new Date(rows[0].first_seen);
     const daysUsed = Math.floor((Date.now() - firstSeen.getTime()) / 86400000);
     const daysLeft = Math.max(0, days - daysUsed);
