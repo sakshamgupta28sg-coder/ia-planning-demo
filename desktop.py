@@ -67,7 +67,7 @@ def _app_data_dir():
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
     else:
         base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    d = os.path.join(base, "IA Planning")
+    d = os.path.join(base, "IA Planning")   # internal storage name kept stable (data + escape-hatch continuity)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -173,11 +173,11 @@ def _prompt_email() -> str:
     """Ask for an email once (first launch) as a readable dashboard label. Native dialog,
     so it needs no webview session. Returns '' if skipped/unavailable — email is optional
     and never blocks the trial (the machine id is the real key)."""
-    msg = "Enter your email to start your IA Planning trial:"
+    msg = "Enter your email to start your Inv Planner trial:"
     try:
         if sys.platform == "darwin":
             script = (f'display dialog "{msg}" default answer "" '
-                      f'with title "IA Planning" buttons {{"Continue"}} default button "Continue"')
+                      f'with title "Inv Planner" buttons {{"Continue"}} default button "Continue"')
             out = subprocess.check_output(["osascript", "-e", script], text=True,
                                           stderr=subprocess.DEVNULL)
             import re
@@ -185,7 +185,7 @@ def _prompt_email() -> str:
             return (m.group(1).strip() if m else "")
         elif sys.platform.startswith("win"):
             import tempfile
-            vbs = f'WScript.Echo(InputBox("{msg}","IA Planning"))'
+            vbs = f'WScript.Echo(InputBox("{msg}","Inv Planner"))'
             fh = tempfile.NamedTemporaryFile("w", suffix=".vbs", delete=False)
             fh.write(vbs); fh.close()
             out = subprocess.check_output(["cscript", "//Nologo", fh.name], text=True,
@@ -287,11 +287,11 @@ def _write_trial(path: str, first: str, seen: str):
 def _show_trial_expired(reason: str = ""):
     if reason in ("need_internet_first_run", "need_internet_grace"):
         heading = "Internet connection required"
-        body = ("IA Planning needs to connect to the internet to verify your trial. "
+        body = ("Inv Planner needs to connect to the internet to verify your trial. "
                 "Please connect and reopen the app.")
     else:
         heading = "Trial period ended"
-        body = (f"Your {TRIAL_DAYS}-day trial of IA Planning has expired. Please contact "
+        body = (f"Your {TRIAL_DAYS}-day trial of Inv Planner has expired. Please contact "
                 "the sender to continue using the app.")
     html = (
         "<html><body style='font-family:-apple-system,Segoe UI,sans-serif;"
@@ -302,10 +302,10 @@ def _show_trial_expired(reason: str = ""):
     )
     try:
         import webview
-        webview.create_window("IA Planning", html=html, width=560, height=380)
+        webview.create_window("Inv Planner", html=html, width=560, height=380)
         webview.start()
     except Exception:
-        print(f"IA Planning: {TRIAL_DAYS}-day trial period has ended.")
+        print(f"Inv Planner: {TRIAL_DAYS}-day trial period has ended.")
 
 
 def main():
@@ -371,7 +371,7 @@ def main():
         from _version import __version__ as ver
     except Exception:
         ver = ""
-    title = f"IA Planning v{ver}" if ver else "IA Planning"
+    title = f"Inv Planner v{ver}" if ver else "Inv Planner"
     if trial_days_left is not None:   # trial active (not the owner escape hatch)
         title += f" · Trial: {trial_days_left} day{'s' if trial_days_left != 1 else ''} left"
 

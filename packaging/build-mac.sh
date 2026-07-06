@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the IA Planning Mac app locally. Run from the repo root: ./build/build-mac.sh
-# Produces: dist/IA Planning.app
+# Build the Inv Planner Mac app locally. Run from the repo root: ./build/build-mac.sh
+# Produces: dist/Inv Planner.app
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -18,5 +18,5 @@ fi
 echo "==> Packaging with PyInstaller"
 .buildvenv/bin/pyinstaller packaging/ia-planning.spec --noconfirm --distpath dist --workpath build/work
 
-echo "==> Done: dist/IA Planning.app"
+echo "==> Done: dist/Inv Planner.app"
 echo "   (unsigned — first launch: right-click the app -> Open, then Open again)"

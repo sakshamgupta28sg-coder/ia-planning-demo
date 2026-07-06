@@ -39,15 +39,15 @@ pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz, a.scripts, [], exclude_binaries=True,
-    name="IA Planning",
+    name="Inv Planner",
     console=False,          # windowed app, no terminal
     disable_windowed_traceback=False,
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="IA Planning")
+coll = COLLECT(exe, a.binaries, a.datas, name="Inv Planner")
 
 # macOS: wrap into a proper .app bundle
 app = BUNDLE(
     coll,
-    name="IA Planning.app",
+    name="Inv Planner.app",
     bundle_identifier="com.iaplanning.app",
 )
